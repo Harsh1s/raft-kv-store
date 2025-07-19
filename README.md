@@ -187,3 +187,5 @@ docs/           # runbooks and release engineering docs
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for coding, testing, and PR workflow.
 
 ## License
+
+MIT. See [LICENSE](LICENSE).
