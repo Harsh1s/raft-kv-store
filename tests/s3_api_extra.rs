@@ -253,3 +253,5 @@ async fn test_s3_multiple_objects() {
     let _ = fs::remove_file(format!("vol-s3extra-{}.log", test_id));
     let _ = fs::remove_dir_all(&coord_data);
     let _ = fs::remove_dir_all(&vol_data);
+    let _ = fs::remove_dir_all(&vol_wal);
+}
