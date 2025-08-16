@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package minikv;
+
+// Internal volume service (coordinator → volume)
+service VolumeInternal {
+  // 2PC write protocol
+  rpc Prepare(PrepareRequest) returns (PrepareResponse);
+  rpc Commit(CommitRequest) returns (CommitResponse);
+  rpc Abort(AbortRequest) returns (AbortResponse);
+  
+  // Replication & repair
+  rpc Pull(PullRequest) returns (stream Chunk);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  
+  // Health & admin
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc Stats(StatsRequest) returns (StatsResponse);
+}
+
+// Coordinator service (volume → coordinator, raft peers)
+service CoordinatorInternal {
+  // Raft RPCs
+  rpc RequestVote(VoteRequest) returns (VoteResponse);
+  rpc AppendEntries(AppendRequest) returns (AppendResponse);
+  rpc InstallSnapshot(SnapshotRequest) returns (SnapshotResponse);
+  
+  // Volume registration
+  rpc Join(JoinRequest) returns (JoinResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Range queries and batch operations
+  rpc Range(RangeRequest) returns (RangeResponse);
+  rpc Batch(BatchRequest) returns (BatchResponse);
+}
+
+// ===== Range Query Messages =====
+message RangeRequest {
+  string start = 1;
+  string end = 2;
+  bool include_values = 3;
+}
+
+message RangeResponse {
+  repeated string keys = 1;
+  repeated bytes values = 2;
+}
+
+// ===== Batch Operation Messages =====
+message BatchRequest {
+  repeated BatchOp ops = 1;
+}
+
+message BatchOp {
+  enum Type {
+    PUT = 0;
+    GET = 1;
+    DELETE = 2;
+  }
+  Type type = 1;
+  string key = 2;
+  bytes value = 3;
+}
+
+message BatchResponse {
+  repeated BatchResult results = 1;
+}
+
+message BatchResult {
+  bool ok = 1;
+  string key = 2;
+  bytes value = 3;
