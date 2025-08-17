@@ -146,3 +146,78 @@ Steps:
 1. Start cluster.
 2. Run `bench/run_all.sh`.
 3. Observe latency, throughput, and errors in `GET /metrics`.
+4. Confirm no crash loops.
+
+Success criteria:
+- Cluster handles target load without instability.
+
+## 10. Consistency Verification
+
+Context: Validate replicated state after mixed operations.
+
+Steps:
+1. Insert deterministic key-value sets.
+2. Execute update and delete operations.
+3. Compare observed state across nodes.
+4. Verify Raft replication alignment.
+
+Success criteria:
+- Final values are consistent across replicas.
+
+## 11. Compaction and Repair Safety
+
+Context: Validate admin operations under live traffic.
+
+Steps:
+1. Populate dataset.
+2. Run `POST /admin/compact`.
+3. Run `POST /admin/repair`.
+4. Validate availability and data consistency.
+
+Success criteria:
+- No data loss.
+- Cluster remains operational.
+
+## 12. Audit Logging
+
+Context: Validate traceability of sensitive actions.
+
+Steps:
+1. Ensure audit logging is enabled.
+2. Perform admin actions and data operations.
+3. Inspect audit outputs.
+
+Success criteria:
+- Sensitive actions are recorded with actor, target, and timestamp.
+
+## 13. Persistent Storage Backends
+
+Context: Validate durability with RocksDB or Sled.
+
+Steps:
+1. Configure backend.
+2. Insert data.
+3. Restart services.
+4. Re-validate data access.
+
+Success criteria:
+- Data survives restart with no corruption.
+
+## 14. Watch and Subscribe Notifications
+
+Context: Validate real-time change propagation.
+
+Steps:
+1. Open WebSocket (`/watch/ws`) and SSE (`/watch/sse`) subscriptions.
+2. Trigger put/delete operations.
+3. Validate payload format and ordering.
+
+Success criteria:
+- Subscribers receive expected events promptly.
+- No systematic duplicates or missed events.
+
+## Execution Notes
+
+- Record commands, timestamps, and environment.
+- Capture logs and metrics for failures.
+- Store outcomes in `tests/RESULT_TEMPLATE.md`.

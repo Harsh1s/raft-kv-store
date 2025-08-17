@@ -79,4 +79,3 @@ echo ""
 echo "Press Ctrl+C to stop all processes"
 
 # Wait and cleanup on exit
-wait
