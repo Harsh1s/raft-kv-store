@@ -1,0 +1,38 @@
+[package]
+name = "minikv"
+version = "1.0.1"
+edition = "2021"
+authors = ["Em' <whispem@users.noreply.github.com>"]
+description = "Distributed key-value store with Raft consensus, encryption at rest, and pluggable storage backends."
+license = "MIT"
+repository = "https://github.com/whispem/minikv"
+keywords = ["distributed", "kv-store", "raft", "consensus", "storage"]
+categories = ["database-implementations", "network-programming"]
+rust-version = "1.81"
+
+[dependencies]
+# Persistent storage backends
+sled = { version = "0.34", optional = true }
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "fs", "signal", "time"] }
+# gRPC
+tonic = { version = "0.12", features = ["tls"] }
+prost = "0.13"
+# HTTP server (public API)
+axum = { version = "0.7", features = ["ws"] }
+tower = { version = "0.5", features = ["util", "timeout"] }
+tower-http = { version = "0.5", features = ["limit", "trace"] }
+# Metadata store
+rocksdb = "0.22"
+# Raft consensus
+raft = "0.7"
+raft-proto = "0.7"
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+# Crypto & hashing
+blake3 = "1.5"
+crc32fast = "1.4"
+# Bloom filters
+bloomfilter = "3.0.1"
