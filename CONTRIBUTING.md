@@ -74,3 +74,41 @@ For release-critical PRs, also run:
 
 ```bash
 make release-preflight-full
+```
+
+## Documentation Requirements
+
+Update docs when you change behavior in any of these areas:
+
+- Public APIs/endpoints
+- Operational procedures (backup/restore, observability, deployment)
+- Release process
+- Developer commands or workflows
+
+Key files:
+
+- `README.md`
+- `CHANGELOG.md`
+- `docs/ops-backup-restore.md`
+- `docs/release-engineering-v1.0.0.md`
+
+## Current Priority Areas
+
+- CDC integrations (Kafka Connect templates)
+- Read replicas for analytics traffic
+- Vector indexing acceleration (HNSW/PQ)
+- PITR and disaster recovery hardening
+- Multi-region failover automation
+
+## Code Style
+
+- Keep changes small and focused.
+- Prefer explicit errors over hidden fallbacks.
+- Write doc comments for non-trivial behavior.
+- Preserve backward compatibility unless the PR clearly documents a breaking change.
+
+## Community
+
+- Be respectful and constructive.
+- Assume good intent.
+- Review code for correctness, maintainability, and operational risk.
