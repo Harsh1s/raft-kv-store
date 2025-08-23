@@ -500,3 +500,254 @@ impl TimeseriesEngine {
                     Aggregation::Sum => values.iter().sum(),
                     Aggregation::Min => values.iter().cloned().fold(f64::MAX, f64::min),
                     Aggregation::Max => values.iter().cloned().fold(f64::MIN, f64::max),
+                    Aggregation::Count => values.len() as f64,
+                    Aggregation::First => values.first().copied().unwrap_or(0.0),
+                    Aggregation::Last => values.last().copied().unwrap_or(0.0),
+                };
+                DataPoint {
+                    timestamp: ts,
+                    value,
+                }
+            })
+            .collect()
+    }
+
+    fn series_key(&self, metric: &str, tags: &HashMap<String, String>) -> String {
+        if tags.is_empty() {
+            return metric.to_string();
+        }
+
+        let mut sorted_tags: Vec<_> = tags.iter().collect();
+        sorted_tags.sort_by_key(|(k, _)| *k);
+
+        let tags_str: Vec<String> = sorted_tags
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+
+        format!("{}|{}", metric, tags_str.join(","))
+    }
+
+    fn matches_metric(&self, series_key: &str, pattern: &str) -> bool {
+        let metric = series_key.split('|').next().unwrap_or(series_key);
+
+        if pattern.contains('*') {
+            let parts: Vec<&str> = pattern.split('*').collect();
+            if parts.len() == 2 {
+                metric.starts_with(parts[0]) && metric.ends_with(parts[1])
+            } else {
+                metric.starts_with(parts[0])
+            }
+        } else {
+            metric == pattern
+        }
+    }
+
+    fn matches_tags(&self, series_key: &str, filters: &HashMap<String, String>) -> bool {
+        if filters.is_empty() {
+            return true;
+        }
+
+        let tags = self.extract_tags(series_key);
+        for (key, value) in filters {
+            if tags.get(key) != Some(value) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn extract_tags(&self, series_key: &str) -> HashMap<String, String> {
+        let mut tags = HashMap::new();
+
+        if let Some(tags_part) = series_key.split('|').nth(1) {
+            for tag in tags_part.split(',') {
+                if let Some((k, v)) = tag.split_once('=') {
+                    tags.insert(k.to_string(), v.to_string());
+                }
+            }
+        }
+
+        tags
+    }
+
+    pub fn run_retention(&self) -> Result<u64> {
+        let cutoff = Utc::now() - Duration::days(self.config.retention_days as i64);
+        let cutoff_ts = cutoff.timestamp_millis();
+
+        let mut data = self.data.write().unwrap();
+        let mut deleted = 0u64;
+
+        for (_, buckets) in data.iter_mut() {
+            let old_keys: Vec<i64> = buckets.range(..cutoff_ts).map(|(k, _)| *k).collect();
+
+            for key in old_keys {
+                if let Some(block) = buckets.remove(&key) {
+                    deleted += block.count as u64;
+                }
+            }
+        }
+
+        Ok(deleted)
+    }
+
+    pub fn run_downsampling(&self) -> Result<u64> {
+        let now = Utc::now();
+        let mut downsampled = 0u64;
+
+        for rule in &self.config.downsample_rules {
+            let cutoff = now - rule.after;
+            let cutoff_ts = cutoff.timestamp_millis();
+
+            let data = self.data.read().unwrap();
+
+            for (_series_key, buckets) in data.iter() {
+                for (_bucket_ts, block) in buckets.range(..cutoff_ts) {
+                    if block.count > 1 {
+                        downsampled += block.count as u64;
+                    }
+                }
+            }
+        }
+
+        Ok(downsampled)
+    }
+
+    pub fn stats(&self) -> TimeseriesStats {
+        let data = self.data.read().unwrap();
+
+        let mut total_series = 0;
+        let mut total_points = 0;
+        let mut total_bytes = 0;
+
+        for (_, buckets) in data.iter() {
+            total_series += 1;
+            for (_, block) in buckets.iter() {
+                total_points += block.count;
+                total_bytes += block.data.len();
+            }
+        }
+
+        TimeseriesStats {
+            total_series,
+            total_points,
+            total_bytes,
+            retention_days: self.config.retention_days,
+            downsample_rules: self.config.downsample_rules.len(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeseriesStats {
+    pub total_series: usize,
+    pub total_points: usize,
+    pub total_bytes: usize,
+    pub retention_days: u32,
+    pub downsample_rules: usize,
+}
+
+use once_cell::sync::Lazy;
+
+pub static TIMESERIES_ENGINE: Lazy<RwLock<Option<TimeseriesEngine>>> =
+    Lazy::new(|| RwLock::new(None));
+
+pub fn init_timeseries(config: TimeseriesConfig) {
+    let engine = TimeseriesEngine::new(config);
+    let mut guard = TIMESERIES_ENGINE.write().unwrap();
+    *guard = Some(engine);
+}
+
+pub fn get_timeseries_engine(
+) -> Option<std::sync::RwLockReadGuard<'static, Option<TimeseriesEngine>>> {
+    let guard = TIMESERIES_ENGINE.read().ok()?;
+    if guard.is_some() {
+        Some(guard)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolution_align() {
+        let ts = 1706788234567i64; // Some timestamp
+
+        assert_eq!(Resolution::Minute.align(ts), 1706788200000);
+        assert_eq!(Resolution::Hour.align(ts), 1706785200000);
+    }
+
+    #[test]
+    fn test_series_key() {
+        let engine = TimeseriesEngine::new(TimeseriesConfig::default());
+
+        let mut tags = HashMap::new();
+        tags.insert("host".to_string(), "server1".to_string());
+        tags.insert("region".to_string(), "us-east".to_string());
+
+        let key = engine.series_key("cpu.usage", &tags);
+        assert!(key.contains("cpu.usage"));
+        assert!(key.contains("host=server1"));
+        assert!(key.contains("region=us-east"));
+    }
+
+    #[test]
+    fn test_write_and_query() {
+        let engine = TimeseriesEngine::new(TimeseriesConfig::default());
+
+        let mut series = TimeSeries::new("cpu.usage");
+        series = series.with_tag("host", "server1");
+
+        let now = Utc::now().timestamp_millis();
+        for i in 0..100 {
+            series.add_point(DataPoint::new(now + i * 1000, 50.0 + (i as f64) * 0.1));
+        }
+
+        engine.write(&series).unwrap();
+
+        let result = engine
+            .query(&TimeseriesQuery {
+                metric: "cpu.usage".to_string(),
+                start: Utc::now() - Duration::hours(1),
+                end: Utc::now() + Duration::hours(1),
+                tags: HashMap::new(),
+                aggregation: None,
+                resolution: None,
+                limit: None,
+            })
+            .unwrap();
+
+        assert_eq!(result.series.len(), 1);
+        assert_eq!(result.series[0].points.len(), 100);
+    }
+
+    #[test]
+    fn test_aggregation() {
+        let engine = TimeseriesEngine::new(TimeseriesConfig::default());
+
+        let points = vec![
+            DataPoint::new(1000, 10.0),
+            DataPoint::new(2000, 20.0),
+            DataPoint::new(3000, 30.0),
+            DataPoint::new(4000, 40.0),
+        ];
+
+        let avg = engine.aggregate_points(&points, Aggregation::Average, Resolution::Minute);
+        assert_eq!(avg.len(), 1);
+        assert_eq!(avg[0].value, 25.0);
+
+        let sum = engine.aggregate_points(&points, Aggregation::Sum, Resolution::Minute);
+        assert_eq!(sum[0].value, 100.0);
+    }
+
+    #[test]
+    fn test_wildcard_matching() {
+        let engine = TimeseriesEngine::new(TimeseriesConfig::default());
+
+        assert!(engine.matches_metric("cpu.usage", "cpu.*"));
+        assert!(engine.matches_metric("cpu.usage", "*.usage"));
+        assert!(engine.matches_metric("cpu.usage", "cpu.usage"));
+        assert!(!engine.matches_metric("memory.free", "cpu.*"));
