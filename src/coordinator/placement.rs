@@ -127,3 +127,5 @@ mod tests {
 
         let result = manager.select_volumes("test-key", &volumes);
         assert!(result.is_err());
+    }
+}

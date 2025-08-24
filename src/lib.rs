@@ -52,32 +52,3 @@
 //! ```bash
 //! # Put a blob
 //! minikv put my-key --file ./data.bin --coordinator http://localhost:5000
-//!
-//! # Get a blob
-//! minikv get my-key --output ./out.bin
-//!
-//! # Delete
-//! minikv delete my-key
-//!
-//! # Ops commands
-//! minikv verify --deep
-//! minikv repair --replicas 3
-//! minikv compact --shard 0
-//! ```
-
-pub mod common;
-pub mod coordinator;
-pub mod ops;
-pub mod volume;
-
-pub use common::{Config, Error, Result};
-pub use coordinator::Coordinator;
-pub use volume::VolumeServer;
-
-pub mod proto {
-    tonic::include_proto!("minikv");
-}
-
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-pub const BUILD_INFO: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("CARGO_PKG_NAME"), ")");
