@@ -146,3 +146,151 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real-time capture of all data changes (INSERT, UPDATE, DELETE)
 - Configurable sinks for event delivery:
   - Webhook sink (HTTP POST to external endpoints)
+  - Kafka sink (for event streaming platforms)
+  - File sink (for local debugging/archival)
+  - Memory sink (for testing)
+- Event filtering by operation type and key prefix
+- Sequence numbers for guaranteed ordering
+- Old value capture for UPDATE and DELETE operations
+
+#### Admin Web UI
+- Embedded web dashboard for cluster monitoring
+- Real-time cluster status visualization
+- API key management interface
+- Backup/restore controls with progress tracking
+- Plugin management UI
+- Cross-DC replication status monitoring
+- Responsive dark theme design
+
+#### Backup & Restore
+- Full backup support (complete snapshot)
+- Incremental backup support (changes since last backup)
+- Backup compression (configurable)
+- Backup encryption support
+- Multiple backup destinations:
+  - Local filesystem
+  - S3-compatible storage
+- Point-in-time recovery
+- Checksum verification during restore
+- Backup manifest with metadata
+
+#### Plugin System
+- Extensible plugin architecture
+- Plugin types:
+  - Storage plugins (custom backends)
+  - Auth plugins (custom authentication)
+  - Hook plugins (event listeners)
+  - Middleware plugins (request interceptors)
+- Plugin lifecycle management (load, enable, disable, unload)
+- Plugin dependencies and version compatibility
+- Built-in logging hook plugin example
+
+#### New API Endpoints
+- `GET /admin/ui` - Admin web dashboard
+- `POST /admin/backup` - Create a new backup
+- `GET /admin/backups` - List all backups
+- `GET /admin/backups/:id` - Get backup details
+- `DELETE /admin/backups/:id` - Delete a backup
+- `POST /admin/restore` - Restore from backup
+- `GET /admin/replication/status` - Replication status
+- `GET /admin/plugins` - List plugins
+- `POST /admin/plugins/:id/enable` - Enable a plugin
+- `POST /admin/plugins/:id/disable` - Disable a plugin
+- `GET /admin/cdc/status` - CDC status
+
+#### Technical Improvements
+- Added `async-trait` for async plugin traits
+- New modules: `replication`, `cdc`, `backup`, `plugin`, `admin_ui`
+- Comprehensive unit tests for all new features
+- Vector clock implementation for distributed causality
+
+---
+
+## [0.7.0] - 2026-01-25
+
+### Added - v0.7.0 Release
+
+#### Streaming/batch import/export
+- `POST /admin/import` - Batch import key-value pairs from JSON payload
+- `GET /admin/export` - Streaming export of all key-value pairs as NDJSON
+
+#### Multi-key transactions
+- `POST /transaction` - Execute multiple operations (put/delete) in a single request
+- Returns detailed results for each operation with success/error status
+
+#### Secondary indexes
+- `GET /search?value=<substring>` - Search for keys whose values contain the specified substring
+
+#### Durable S3-backed object store
+- S3-compatible API now supports pluggable persistent storage backends (RocksDB, Sled)
+- Objects can be stored durably by configuring storage backend in config.toml
+
+---
+
+## [0.6.0] - 2025-01-20
+
+### Added - v0.6.0 Release
+
+#### Major Features - Security, Multi-tenancy & Observability
+- **API Key Authentication** - Secure access control with API keys
+  - Generate and manage API keys via admin endpoints
+  - Keys are securely hashed using Argon2id
+  - Support for key expiration and revocation
+  - Headers: `Authorization: Bearer <api_key>` or `X-API-Key: <key>`
+- **JWT Token Support** - Stateless authentication tokens
+  - Generate JWT tokens from valid API keys
+  - Configurable token expiration (default: 24 hours)
+  - HMAC-SHA256 signature verification
+- **Role-Based Access Control (RBAC)** - Fine-grained permissions
+  - Three role levels: Admin, ReadWrite, ReadOnly
+  - Middleware enforcement on all protected routes
+  - Role-based endpoint restrictions
+- **Multi-tenancy** - Tenant isolation for data
+  - Tenant identifier attached to each API key
+  - S3 objects tagged with tenant ownership
+  - Tenant extraction from authenticated requests
+- **Encryption at Rest** - AES-256-GCM data encryption
+  - HKDF-SHA256 key derivation from master key
+  - Per-object random nonces for security
+  - Separate keys for data and WAL encryption
+  - Transparent encryption/decryption with backward compatibility
+- **Tenant Quotas** - Resource limits per tenant
+  - Storage limits (bytes)
+  - Object count limits
+  - Request rate limiting per tenant
+  - Prometheus metrics for quota usage
+- **Audit Logging** - Structured audit logs for all admin and sensitive actions (file + stdout)
+- **Persistent Storage Backends** - Pluggable storage: in-memory, RocksDB, Sled (configurable via config.toml)
+- **Watch/Subscribe System** - Real-time key change notifications (WebSocket & SSE endpoints, production-ready)
+  - Subscribe to key changes via `/watch/sse` (SSE) or `/watch/ws` (WebSocket)
+  - Events: PUT, DELETE, REVOKE (with key, tenant, timestamp)
+  - Integrated with all S3/data and admin modification endpoints
+
+#### Admin API Endpoints
+- `POST /admin/keys` - Create new API key
+- `GET /admin/keys` - List all API keys
+- `GET /admin/keys/:id` - Get specific API key details
+- `POST /admin/keys/:id/revoke` - Revoke an API key
+- `DELETE /admin/keys/:id` - Delete an API key
+- `GET /admin/audit` - Download or stream audit logs (NEW)
+- `GET /admin/subscribe` - Subscribe to key change events (NEW, preview)
+
+#### Security Improvements
+- Constant-time password verification with Argon2
+- Secure key generation using cryptographic RNG
+- Authentication middleware for route protection
+- Request validation and tenant context propagation
+- Audit log hooks in all admin and data modification endpoints
+
+#### Storage Improvements
+- Pluggable backend: select in-memory, RocksDB, or Sled via config
+- S3/data endpoints refactored to use trait abstraction
+- Persistent storage for all S3/data paths when enabled
+
+#### Observability
+- Audit log file and stdout output
+- Prometheus metrics for audit, quota, and storage backend
+- Watch/subscribe system for real-time notifications (preview)
+
+#### Breaking Changes
+- S3 store entries now include tenant field

@@ -751,3 +751,5 @@ mod tests {
         assert!(engine.matches_metric("cpu.usage", "*.usage"));
         assert!(engine.matches_metric("cpu.usage", "cpu.usage"));
         assert!(!engine.matches_metric("memory.free", "cpu.*"));
+    }
+}
