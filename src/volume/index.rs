@@ -397,3 +397,5 @@ mod tests {
         assert_eq!(keys_with_ttl.len(), 1);
         assert_eq!(keys_with_ttl[0].0, "key_with_ttl");
         assert_eq!(keys_with_ttl[0].1, 12345);
+    }
+}
