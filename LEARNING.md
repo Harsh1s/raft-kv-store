@@ -122,3 +122,65 @@ I had no formal tech background, but I wanted to understand how systems worked a
 **Storage Engine:**
 - Segmented, append-only log structure
 - In-memory HashMap indexing for O(1) key lookups
+- Bloom filters for fast negative queries
+- Instant index snapshots (5ms restarts)
+- CRC32 checksums on every record
+- Automatic background compaction and space reclamation
+- Persistent storage backends: RocksDB, Sled, in-memory (configurable)
+
+**Security & Multi-Tenancy:**
+- API Key authentication (Argon2)
+- JWT token support
+- Role-Based Access Control (Admin/ReadWrite/ReadOnly)
+- Multi-tenant data isolation
+- AES-256-GCM encryption at rest
+- Per-tenant quotas (storage, objects, rate limits)
+- Audit logging for all admin and data modification events
+
+**Durability:**
+- Write-Ahead Log (WAL) for safety
+- Configurable fsync policy (always, interval, never)
+- Fast crash recovery via WAL replay
+
+**APIs:**
+- gRPC for internal communication (coordinator <-> volume)
+- HTTP REST API for clients
+- CLI for cluster ops (verify, repair, compact, rebalance, batch, range)
+- WebSocket & SSE endpoints for real-time notifications
+
+**Infrastructure and Operations:**
+- Docker Compose setup for dev/test
+- Helm chart with dev/staging/prod profiles
+- GitHub Actions for CI/CD
+- k6 benchmarks for real scenarios
+- Distributed tracing via OpenTelemetry & Jaeger
+- Prometheus metrics endpoint (`/metrics`) and alert rules
+- Grafana dashboards for cluster visibility
+- Backup and restore runbook for operations
+
+**Testing and Quality:**
+- Integration, stress, and recovery tests
+- Release preflight checks (fmt, clippy, build, tests)
+- All code, scripts, and docs in English
+
+---
+
+## Milestones & Accomplishments
+
+- Learned the fundamentals of Rust: ownership, lifetimes, async/await
+- Built a distributed storage engine with Raft, WAL, and 2PC
+- Added API Key/JWT authentication, RBAC, quotas, and audit logging
+- Implemented a real-time notification system (watch/subscribe via WebSocket and SSE) for key changes
+- Integrated persistent storage backends (RocksDB, Sled)
+- Added time-series APIs and vector similarity search
+- Reached v1.0.0 with release engineering checks and updated documentation
+- Started a Data Science program at AMSE (Aix-Marseille School of Economics) on April 2, 2026
+
+---
+
+## My Takeaway
+
+> “If you can read and express an idea, you can code. Patience, curiosity, and a love of learning are everything!”
+
+*Written by Em' (@whispem), Rust beginner, learning by building, including distributed key-value systems.*
+
