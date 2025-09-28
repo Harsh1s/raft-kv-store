@@ -120,3 +120,64 @@ services:
       dockerfile: Dockerfile.volume
     container_name: minikv-volume-2
     ports:
+      - "6002:6000"
+      - "6003:6001"
+    environment:
+      - VOLUME_ID=vol-2
+      - HTTP_BIND=0.0.0.0:6000
+      - GRPC_BIND=0.0.0.0:6001
+      - DATA_PATH=/data/blobs
+      - WAL_PATH=/data/wal
+      - COORDINATORS=http://coord-1:5000
+    volumes:
+      - vol2-data:/data
+    networks:
+      - minikv-net
+    restart: unless-stopped
+    depends_on:
+      - coord-1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Volume 3
+  volume-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.volume
+    container_name: minikv-volume-3
+    ports:
+      - "6004:6000"
+      - "6005:6001"
+    environment:
+      - VOLUME_ID=vol-3
+      - HTTP_BIND=0.0.0.0:6000
+      - GRPC_BIND=0.0.0.0:6001
+      - DATA_PATH=/data/blobs
+      - WAL_PATH=/data/wal
+      - COORDINATORS=http://coord-1:5000
+    volumes:
+      - vol3-data:/data
+    networks:
+      - minikv-net
+    restart: unless-stopped
+    depends_on:
+      - coord-1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  coord1-data:
+  coord2-data:
+  coord3-data:
+  vol1-data:
+  vol2-data:
+  vol3-data:
+
+networks:
+  minikv-net:

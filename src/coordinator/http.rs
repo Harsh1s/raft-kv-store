@@ -1112,3 +1112,560 @@ async fn admin_delete_backup(Path(backup_id): Path<String>) -> impl IntoResponse
                     StatusCode::OK,
                     axum::Json(json!({ "status": "deleted", "backup_id": backup_id })),
                 )
+                    .into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": format!("{}", e) })),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "Backup manager not initialized" })),
+        )
+            .into_response()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RestoreRequest {
+    backup_id: String,
+    target_path: Option<String>,
+}
+
+async fn admin_restore(axum::Json(req): axum::Json<RestoreRequest>) -> impl IntoResponse {
+    let guard = crate::common::backup::BACKUP_MANAGER.read().await;
+    if let Some(ref manager) = *guard {
+        let config = crate::common::backup::RestoreConfig {
+            backup_id: req.backup_id.clone(),
+            source: crate::common::backup::BackupDestination::Local {
+                path: "./backups".to_string(),
+            },
+            target_path: req.target_path.unwrap_or_else(|| "./restore".to_string()),
+            decryption_key: None,
+            point_in_time: None,
+            parallel_workers: 4,
+            verify_checksums: true,
+        };
+
+        match manager.start_restore(config).await {
+            Ok(restore_id) => {
+                AUDIT_LOGGER.log_event(
+                    AuditEventType::System,
+                    "admin".to_string(),
+                    Some(req.backup_id.clone()),
+                    format!("Started restore from backup {}", req.backup_id),
+                    None,
+                );
+                (
+                    StatusCode::ACCEPTED,
+                    axum::Json(json!({
+                        "status": "started",
+                        "restore_id": restore_id,
+                        "backup_id": req.backup_id
+                    })),
+                )
+                    .into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": format!("{}", e) })),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "Backup manager not initialized" })),
+        )
+            .into_response()
+    }
+}
+
+async fn admin_replication_status() -> impl IntoResponse {
+    let guard = crate::common::replication::REPLICATION_MANAGER
+        .read()
+        .unwrap();
+    if let Some(ref manager) = *guard {
+        let config = manager.config();
+        let status = manager.get_status();
+        let healthy = manager.is_healthy();
+
+        axum::Json(json!({
+            "enabled": true,
+            "local_dc": config.local_dc,
+            "conflict_resolution": format!("{:?}", config.conflict_resolution),
+            "async_replication": config.async_replication,
+            "healthy": healthy,
+            "remote_dcs": status.iter().map(|s| json!({
+                "dc_id": s.dc_id,
+                "healthy": s.healthy,
+                "lag_secs": s.lag_secs,
+                "pending_events": s.pending_events,
+                "last_replicated_at": s.last_replicated_at,
+                "last_error": s.last_error
+            })).collect::<Vec<_>>()
+        }))
+    } else {
+        axum::Json(json!({
+            "enabled": false,
+            "message": "Replication not configured"
+        }))
+    }
+}
+
+async fn admin_list_plugins() -> impl IntoResponse {
+    let plugins = crate::common::plugin::get_plugin_manager()
+        .list_plugins()
+        .await;
+
+    let plugin_list: Vec<serde_json::Value> = plugins
+        .iter()
+        .map(|(info, state)| {
+            json!({
+                "id": info.id,
+                "name": info.name,
+                "description": info.description,
+                "version": info.version.to_string(),
+                "author": info.author,
+                "plugin_type": format!("{:?}", info.plugin_type),
+                "state": format!("{:?}", state)
+            })
+        })
+        .collect();
+
+    axum::Json(json!({
+        "plugins": plugin_list,
+        "total": plugin_list.len()
+    }))
+}
+
+async fn admin_enable_plugin(Path(plugin_id): Path<String>) -> impl IntoResponse {
+    match crate::common::plugin::get_plugin_manager()
+        .enable(&plugin_id)
+        .await
+    {
+        Ok(()) => {
+            AUDIT_LOGGER.log_event(
+                AuditEventType::System,
+                "admin".to_string(),
+                Some(plugin_id.clone()),
+                "Enabled plugin".to_string(),
+                None,
+            );
+            (
+                StatusCode::OK,
+                axum::Json(json!({ "status": "enabled", "plugin_id": plugin_id })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": format!("{}", e) })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_disable_plugin(Path(plugin_id): Path<String>) -> impl IntoResponse {
+    match crate::common::plugin::get_plugin_manager()
+        .disable(&plugin_id)
+        .await
+    {
+        Ok(()) => {
+            AUDIT_LOGGER.log_event(
+                AuditEventType::System,
+                "admin".to_string(),
+                Some(plugin_id.clone()),
+                "Disabled plugin".to_string(),
+                None,
+            );
+            (
+                StatusCode::OK,
+                axum::Json(json!({ "status": "disabled", "plugin_id": plugin_id })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": format!("{}", e) })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_cdc_status() -> impl IntoResponse {
+    let (enabled, sequence) = {
+        let guard = crate::common::cdc::CDC_MANAGER.read().unwrap();
+        if let Some(ref manager) = *guard {
+            (true, manager.current_sequence())
+        } else {
+            (false, 0)
+        }
+    };
+
+    if enabled {
+        axum::Json(json!({
+            "enabled": true,
+            "current_sequence": sequence,
+            "sinks": []
+        }))
+    } else {
+        axum::Json(json!({
+            "enabled": false,
+            "message": "CDC not configured"
+        }))
+    }
+}
+
+async fn admin_timeseries_stats() -> impl IntoResponse {
+    ensure_timeseries_engine();
+    let guard = crate::common::timeseries::TIMESERIES_ENGINE.read().unwrap();
+
+    let stats = guard.as_ref().map(|engine| engine.stats()).unwrap_or(
+        crate::common::timeseries::TimeseriesStats {
+            total_series: 0,
+            total_points: 0,
+            total_bytes: 0,
+            retention_days: 30,
+            downsample_rules: 0,
+        },
+    );
+
+    axum::Json(json!({
+        "enabled": true,
+        "resolutions": ["raw", "1min", "5min", "1hour", "1day"],
+        "compression": ["delta", "gorilla"],
+        "aggregations": ["sum", "avg", "min", "max", "count", "stddev"],
+        "stats": stats,
+    }))
+}
+
+async fn admin_geo_status() -> impl IntoResponse {
+    axum::Json(json!({
+        "enabled": false,
+        "local_region": null,
+        "remote_regions": [],
+        "routing_strategy": "nearest",
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct TsPointInput {
+    timestamp: i64,
+    value: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TsWriteRequest {
+    metric: String,
+    #[serde(default)]
+    tags: HashMap<String, String>,
+    points: Vec<TsPointInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TsQueryRequest {
+    metric: String,
+    start: Option<String>,
+    end: Option<String>,
+    #[serde(default)]
+    tags: HashMap<String, String>,
+    aggregation: Option<crate::common::timeseries::Aggregation>,
+    resolution: Option<crate::common::timeseries::Resolution>,
+    limit: Option<usize>,
+}
+
+fn parse_ts_datetime(input: &str) -> Result<DateTime<Utc>, String> {
+    DateTime::parse_from_rfc3339(input)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| format!("invalid datetime '{}': {}", input, e))
+}
+
+fn build_ts_query(
+    req: TsQueryRequest,
+) -> Result<crate::common::timeseries::TimeseriesQuery, String> {
+    let end = match req.end {
+        Some(v) => parse_ts_datetime(&v)?,
+        None => Utc::now(),
+    };
+    let start = match req.start {
+        Some(v) => parse_ts_datetime(&v)?,
+        None => end - ChronoDuration::hours(1),
+    };
+
+    Ok(crate::common::timeseries::TimeseriesQuery {
+        metric: req.metric,
+        start,
+        end,
+        tags: req.tags,
+        aggregation: req.aggregation,
+        resolution: req.resolution,
+        limit: req.limit,
+    })
+}
+
+async fn ts_write(axum::Json(req): axum::Json<TsWriteRequest>) -> impl IntoResponse {
+    if req.metric.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": "metric is required" })),
+        )
+            .into_response();
+    }
+
+    ensure_timeseries_engine();
+
+    let mut series = crate::common::timeseries::TimeSeries::new(&req.metric);
+    series.tags = req.tags;
+    series.points = req
+        .points
+        .into_iter()
+        .map(|p| crate::common::timeseries::DataPoint::new(p.timestamp, p.value))
+        .collect();
+
+    let guard = crate::common::timeseries::TIMESERIES_ENGINE.read().unwrap();
+    let engine = match guard.as_ref() {
+        Some(engine) => engine,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({ "error": "timeseries engine unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    match engine.write(&series) {
+        Ok(()) => (
+            StatusCode::OK,
+            axum::Json(json!({
+                "success": true,
+                "metric": series.metric,
+                "points_written": series.points.len()
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": format!("timeseries write failed: {}", e) })),
+        )
+            .into_response(),
+    }
+}
+
+async fn ts_query(axum::Json(req): axum::Json<TsQueryRequest>) -> impl IntoResponse {
+    ensure_timeseries_engine();
+
+    let query = match build_ts_query(req) {
+        Ok(q) => q,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": e }))).into_response();
+        }
+    };
+
+    let guard = crate::common::timeseries::TIMESERIES_ENGINE.read().unwrap();
+    let engine = match guard.as_ref() {
+        Some(engine) => engine,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({ "error": "timeseries engine unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    match engine.query(&query) {
+        Ok(result) => (
+            StatusCode::OK,
+            axum::Json(json!({
+                "success": true,
+                "series": result.series,
+                "points": result
+                    .series
+                    .iter()
+                    .flat_map(|s| s.points.iter().cloned())
+                    .collect::<Vec<_>>(),
+                "execution_time_ms": result.execution_time_ms,
+                "points_scanned": result.points_scanned,
+                "points_returned": result.points_returned
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": format!("timeseries query failed: {}", e) })),
+        )
+            .into_response(),
+    }
+}
+
+async fn ts_query_get(Query(req): Query<TsQueryRequest>) -> impl IntoResponse {
+    ts_query(axum::Json(req)).await
+}
+
+#[derive(Debug, Deserialize)]
+struct VectorUpsertRequest {
+    id: String,
+    values: Vec<f32>,
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VectorQueryRequest {
+    vector: Vec<f32>,
+    top_k: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct VectorMatch {
+    id: String,
+    score: f32,
+    metadata: Option<serde_json::Value>,
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return None;
+    }
+
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+    }
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return None;
+    }
+    Some(dot / (norm_a.sqrt() * norm_b.sqrt()))
+}
+
+async fn vector_upsert(axum::Json(req): axum::Json<VectorUpsertRequest>) -> impl IntoResponse {
+    if let Err(e) = load_vector_index_if_needed() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": e })),
+        )
+            .into_response();
+    }
+
+    if req.id.trim().is_empty() || req.values.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({
+                "error": "id and non-empty values are required"
+            })),
+        )
+            .into_response();
+    }
+
+    let point = VectorPoint {
+        id: req.id.clone(),
+        values: req.values,
+        metadata: req.metadata,
+        updated_at: chrono::Utc::now().timestamp(),
+    };
+
+    let mut index = VECTOR_INDEX.write().unwrap();
+    index.insert(req.id.clone(), point);
+    drop(index);
+
+    if let Err(e) = persist_vector_index() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": e })),
+        )
+            .into_response();
+    }
+
+    let index = VECTOR_INDEX.read().unwrap();
+
+    (
+        StatusCode::OK,
+        axum::Json(json!({
+            "status": "upserted",
+            "id": req.id,
+            "total_vectors": index.len()
+        })),
+    )
+        .into_response()
+}
+
+async fn vector_query(axum::Json(req): axum::Json<VectorQueryRequest>) -> impl IntoResponse {
+    if let Err(e) = load_vector_index_if_needed() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": e })),
+        )
+            .into_response();
+    }
+
+    if req.vector.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": "vector must be non-empty" })),
+        )
+            .into_response();
+    }
+
+    let top_k = req.top_k.unwrap_or(10).clamp(1, 100);
+    let index = VECTOR_INDEX.read().unwrap();
+
+    let mut matches: Vec<VectorMatch> = index
+        .values()
+        .filter_map(|point| {
+            cosine_similarity(&req.vector, &point.values).map(|score| VectorMatch {
+                id: point.id.clone(),
+                score,
+                metadata: point.metadata.clone(),
+            })
+        })
+        .collect();
+
+    matches.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    matches.truncate(top_k);
+
+    (
+        StatusCode::OK,
+        axum::Json(json!({
+            "matches": matches,
+            "top_k": top_k,
+            "total_indexed": index.len()
+        })),
+    )
+        .into_response()
+}
+
+async fn admin_vector_stats() -> impl IntoResponse {
+    if let Err(e) = load_vector_index_if_needed() {
+        return axum::Json(json!({
+            "enabled": false,
+            "error": e
+        }));
+    }
+
+    let index = VECTOR_INDEX.read().unwrap();
+    let dims = index
+        .values()
+        .next()
+        .map(|point| point.values.len())
+        .unwrap_or(0);
+
+    axum::Json(json!({
+        "enabled": true,
+        "index_type": "persistent_flat",
+        "vectors": index.len(),
+        "dimensions": dims,
+        "path": VECTOR_INDEX_PATH
+    }))
