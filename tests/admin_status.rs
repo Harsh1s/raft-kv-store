@@ -34,3 +34,39 @@ fn start_server() -> (Child, u16, u16) {
     );
     cmd.args([
         "serve",
+        "--id",
+        "coord-test",
+        "--bind",
+        &format!("127.0.0.1:{}", http_port),
+        "--grpc",
+        &format!("127.0.0.1:{}", grpc_port),
+        "--db",
+        "./coord-test-data",
+    ]);
+    let log = std::fs::File::create("coord-test.log").expect("Failed to create log file");
+    let log_err = log.try_clone().expect("Failed to clone log file");
+    cmd.stdout(Stdio::from(log));
+    cmd.stderr(Stdio::from(log_err));
+    let child = cmd.spawn().expect("Failed to launch minikv-coord server");
+    (child, http_port, grpc_port)
+}
+
+/// Wait until the HTTP endpoint is ready (timeout 15s)
+async fn wait_for_server(child: &mut Child, http_port: u16) {
+    let client = Client::new();
+    let url = format!("http://localhost:{}/admin/status", http_port);
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().expect("Error waiting for server") {
+            if let Some(mut stderr) = child.stderr.take() {
+                use std::io::Read;
+                let mut buf = String::new();
+                let _ = stderr.read_to_string(&mut buf);
+                panic!("minikv-coord server exited prematurely (exit code {status}):\n{buf}");
+            } else {
+                panic!("minikv-coord server exited prematurely (exit code {status})");
+            }
+        }
+        if start.elapsed() > Duration::from_secs(15) {
+            panic!("Timeout: server not ready at {url}");
+        }
