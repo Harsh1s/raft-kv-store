@@ -494,3 +494,251 @@ impl TieringManager {
             TieringCondition::Size {
                 min_bytes,
                 max_bytes,
+            } => {
+                if let Some(min) = min_bytes {
+                    if metadata.size_bytes < *min {
+                        return false;
+                    }
+                }
+                if let Some(max) = max_bytes {
+                    if metadata.size_bytes > *max {
+                        return false;
+                    }
+                }
+                true
+            }
+
+            TieringCondition::LastAccess {
+                min_since_access_secs,
+                max_since_access_secs,
+            } => {
+                let since = metadata.since_last_access_secs();
+
+                if let Some(min) = min_since_access_secs {
+                    if since < *min {
+                        return false;
+                    }
+                }
+                if let Some(max) = max_since_access_secs {
+                    if since > *max {
+                        return false;
+                    }
+                }
+                true
+            }
+
+            TieringCondition::And { conditions } => conditions
+                .iter()
+                .all(|c| self.evaluate_condition(c, metadata)),
+
+            TieringCondition::Or { conditions } => conditions
+                .iter()
+                .any(|c| self.evaluate_condition(c, metadata)),
+        }
+    }
+
+    pub fn apply_change(&self, change: &TierChange) -> Result<()> {
+        let mut items = self.metadata.write().unwrap();
+        if let Some(metadata) = items.get_mut(&change.key) {
+            let size = metadata.size_bytes;
+
+            let mut stats = self.stats.write().unwrap();
+
+            let from_stat = self.get_tier_stat_mut(&mut stats, change.from_tier);
+            from_stat.item_count = from_stat.item_count.saturating_sub(1);
+            from_stat.size_bytes = from_stat.size_bytes.saturating_sub(size);
+
+            let to_stat = self.get_tier_stat_mut(&mut stats, change.to_tier);
+            to_stat.item_count += 1;
+            to_stat.size_bytes += size;
+
+            stats.bytes_moved += size;
+
+            if change.to_tier.temperature() > change.from_tier.temperature() {
+                stats.total_promotions += 1;
+            } else {
+                stats.total_demotions += 1;
+            }
+
+            metadata.tier = change.to_tier;
+
+            Ok(())
+        } else {
+            Err(Error::Internal(format!("Key not found: {}", change.key)))
+        }
+    }
+
+    pub fn get_stats(&self) -> TierStats {
+        self.stats.read().unwrap().clone()
+    }
+
+    pub fn get_pending_changes(&self) -> Vec<TierChange> {
+        self.pending_changes.read().unwrap().clone()
+    }
+
+    pub fn items_in_tier(&self, tier: Tier) -> Vec<ItemMetadata> {
+        let items = self.metadata.read().unwrap();
+        items.values().filter(|m| m.tier == tier).cloned().collect()
+    }
+
+    pub fn hottest_items(&self, limit: usize) -> Vec<ItemMetadata> {
+        let items = self.metadata.read().unwrap();
+        let mut sorted: Vec<_> = items.values().cloned().collect();
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.access_count));
+        sorted.truncate(limit);
+        sorted
+    }
+
+    pub fn coldest_items(&self, limit: usize) -> Vec<ItemMetadata> {
+        let items = self.metadata.read().unwrap();
+        let mut sorted: Vec<_> = items.values().cloned().collect();
+        sorted.sort_by_key(|a| a.last_accessed_at);
+        sorted.truncate(limit);
+        sorted
+    }
+
+    fn get_tier_stat_mut<'a>(&self, stats: &'a mut TierStats, tier: Tier) -> &'a mut TierStat {
+        match tier {
+            Tier::Hot => &mut stats.hot,
+            Tier::Warm => &mut stats.warm,
+            Tier::Cold => &mut stats.cold,
+            Tier::Archive => &mut stats.archive,
+        }
+    }
+}
+
+pub fn compress(data: &[u8], algorithm: CompressionAlgorithm) -> Result<Vec<u8>> {
+    match algorithm {
+        CompressionAlgorithm::None => Ok(data.to_vec()),
+        CompressionAlgorithm::Lz4 => Ok(data.to_vec()),
+        CompressionAlgorithm::Zstd => Ok(data.to_vec()),
+        CompressionAlgorithm::Snappy => Ok(data.to_vec()),
+        CompressionAlgorithm::Gzip => Ok(data.to_vec()),
+    }
+}
+
+pub fn decompress(data: &[u8], algorithm: CompressionAlgorithm) -> Result<Vec<u8>> {
+    match algorithm {
+        CompressionAlgorithm::None => Ok(data.to_vec()),
+        CompressionAlgorithm::Lz4 => Ok(data.to_vec()),
+        CompressionAlgorithm::Zstd => Ok(data.to_vec()),
+        CompressionAlgorithm::Snappy => Ok(data.to_vec()),
+        CompressionAlgorithm::Gzip => Ok(data.to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_config() -> TieringConfig {
+        TieringConfig {
+            enabled: true,
+            policies: vec![
+                TieringPolicy {
+                    name: "hot-access".to_string(),
+                    prefix: None,
+                    priority: 10,
+                    enabled: true,
+                    rules: vec![TieringRule {
+                        condition: TieringCondition::AccessCount {
+                            min_count: Some(100),
+                            max_count: None,
+                            window_secs: 3600,
+                        },
+                        target_tier: Tier::Hot,
+                    }],
+                },
+                TieringPolicy {
+                    name: "cold-age".to_string(),
+                    prefix: None,
+                    priority: 5,
+                    enabled: true,
+                    rules: vec![TieringRule {
+                        condition: TieringCondition::Age {
+                            min_age_secs: Some(86400 * 30), // 30 days
+                            max_age_secs: None,
+                        },
+                        target_tier: Tier::Cold,
+                    }],
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_track_item() {
+        let manager = TieringManager::new(sample_config());
+
+        manager.track_item("key1", 1000, Tier::Hot);
+        manager.track_item("key2", 2000, Tier::Warm);
+
+        let stats = manager.get_stats();
+        assert_eq!(stats.hot.item_count, 1);
+        assert_eq!(stats.hot.size_bytes, 1000);
+        assert_eq!(stats.warm.item_count, 1);
+        assert_eq!(stats.warm.size_bytes, 2000);
+    }
+
+    #[test]
+    fn test_record_access() {
+        let manager = TieringManager::new(sample_config());
+
+        manager.track_item("key1", 1000, Tier::Hot);
+
+        for _ in 0..10 {
+            manager.record_access("key1");
+        }
+
+        let metadata = manager.get_metadata("key1").unwrap();
+        assert_eq!(metadata.access_count, 10);
+    }
+
+    #[test]
+    fn test_tier_change() {
+        let manager = TieringManager::new(sample_config());
+
+        manager.track_item("key1", 1000, Tier::Hot);
+
+        let change = TierChange {
+            key: "key1".to_string(),
+            from_tier: Tier::Hot,
+            to_tier: Tier::Warm,
+            reason: "Test".to_string(),
+        };
+
+        manager.apply_change(&change).unwrap();
+
+        let metadata = manager.get_metadata("key1").unwrap();
+        assert_eq!(metadata.tier, Tier::Warm);
+
+        let stats = manager.get_stats();
+        assert_eq!(stats.hot.item_count, 0);
+        assert_eq!(stats.warm.item_count, 1);
+        assert_eq!(stats.total_demotions, 1);
+    }
+
+    #[test]
+    fn test_hottest_items() {
+        let manager = TieringManager::new(sample_config());
+
+        manager.track_item("key1", 100, Tier::Hot);
+        manager.track_item("key2", 100, Tier::Hot);
+        manager.track_item("key3", 100, Tier::Hot);
+
+        for _ in 0..50 {
+            manager.record_access("key1");
+        }
+        for _ in 0..100 {
+            manager.record_access("key2");
+        }
+        for _ in 0..10 {
+            manager.record_access("key3");
+        }
+
+        let hottest = manager.hottest_items(2);
+        assert_eq!(hottest.len(), 2);
+        assert_eq!(hottest[0].key, "key2");
+        assert_eq!(hottest[1].key, "key1");
+    }
