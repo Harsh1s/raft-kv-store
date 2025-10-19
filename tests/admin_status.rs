@@ -70,3 +70,40 @@ async fn wait_for_server(child: &mut Child, http_port: u16) {
         if start.elapsed() > Duration::from_secs(15) {
             panic!("Timeout: server not ready at {url}");
         }
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                break;
+            }
+        }
+        sleep(Duration::from_millis(100));
+    }
+}
+
+#[tokio::test]
+async fn test_admin_status() {
+    if std::env::var("CARGO_BIN_EXE_minikv-coord").is_err() {
+        eprintln!("Skipping test_admin_status: CARGO_BIN_EXE_minikv-coord not set");
+        return;
+    }
+    let (mut server, http_port, _grpc_port) = start_server();
+    wait_for_server(&mut server, http_port).await;
+
+    let client = Client::new();
+    let url = format!("http://localhost:{}/admin/status", http_port);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Status request failed");
+    assert!(resp.status().is_success(), "status endpoint failed");
+    let text = resp.text().await.expect("Failed to read response body");
+    let json: Value = serde_json::from_str(&text).expect("Response is not valid JSON");
+    assert!(json.get("role").is_some());
+    assert!(json.get("is_leader").is_some());
+    assert!(json.get("nb_peers").is_some());
+    assert!(json.get("nb_volumes").is_some());
+    assert!(json.get("nb_s3_objects").is_some());
+
+    let _ = server.kill();
+    let _ = server.wait();
+}
