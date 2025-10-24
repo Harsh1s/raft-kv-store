@@ -82,3 +82,46 @@ Complete all sections to ensure traceability and reproducibility.
 
 - [ ] Routing strategies validated
 - [ ] Failover validated
+- [ ] Geo-fencing validated (if configured)
+
+### Data Tiering
+
+- [ ] Tier transitions validated
+- [ ] Readability after movement validated
+
+### io_uring (Linux)
+
+- [ ] io_uring path active when enabled
+- [ ] Fallback path validated
+
+### Reliability and Consistency
+
+- [ ] Node failure recovery validated
+- [ ] Split-brain resistance validated
+- [ ] Consistency across replicas validated
+
+### Operations and Security
+
+- [ ] Compaction and repair safety validated
+- [ ] Audit logging validated
+- [ ] Persistent backend restart durability validated
+
+### Watch and Subscribe
+
+- [ ] `/watch/ws` validated
+- [ ] `/watch/sse` validated
+- [ ] Event payload and ordering validated
+
+## Attachments
+
+- Screenshots:
+- Log extracts:
+- Metrics snapshots:
+- Additional artifacts:
+
+## Final Notes
+
+- Risks identified:
+- Follow-up actions:
+- Owner:
+- Target date:
