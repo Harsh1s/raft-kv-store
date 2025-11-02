@@ -152,3 +152,81 @@ mod tests {
         let sorted1 = hrw_hash(key, &nodes);
         let sorted2 = hrw_hash(key, &nodes);
 
+        assert_eq!(sorted1, sorted2);
+        assert_eq!(sorted1.len(), 3);
+    }
+
+    #[test]
+    fn test_hrw_hash_different_keys() {
+        let nodes = vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ];
+
+        let sorted1 = hrw_hash("key1", &nodes);
+        let sorted2 = hrw_hash("key2", &nodes);
+
+        assert_ne!(sorted1, sorted2);
+    }
+
+    #[test]
+    fn test_select_replicas() {
+        let key = "test-key";
+        let nodes = vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+            "node4".to_string(),
+        ];
+
+        let replicas = select_replicas(key, &nodes, 2);
+        assert_eq!(replicas.len(), 2);
+    }
+
+    #[test]
+    fn test_blob_prefix() {
+        let key = "my-blob-key";
+        let (aa, bb) = blob_prefix(key);
+        assert_eq!(aa.len(), 2);
+        assert_eq!(bb.len(), 2);
+    }
+
+    #[test]
+    fn test_consistent_hash_ring() {
+        let mut ring = ConsistentHashRing::new(256);
+        let nodes = vec!["node1".to_string(), "node2".to_string()];
+
+        ring.assign_shard(0, nodes.clone());
+        ring.assign_shard(1, nodes.clone());
+
+        assert_eq!(ring.get_shard_nodes(0), Some(nodes.as_slice()));
+        let mut found_key = None;
+        for i in 0..10000 {
+            let candidate = format!("key-{}", i);
+            if shard_key(&candidate, 256) == 0 {
+                found_key = Some(candidate);
+                break;
+            }
+        }
+        let key = found_key.expect("No key found for shard 0");
+        assert_eq!(ring.get_nodes(&key), Some(nodes.as_slice()));
+    }
+
+    #[test]
+    fn test_rebalance() {
+        let mut ring = ConsistentHashRing::new(4);
+        let nodes = vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ];
+
+        ring.rebalance(&nodes, 2);
+
+        for shard in 0..4 {
+            let assigned = ring.get_shard_nodes(shard).unwrap();
+            assert_eq!(assigned.len(), 2);
+        }
+    }
+}
