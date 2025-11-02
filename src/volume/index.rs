@@ -131,3 +131,136 @@ impl Index {
         for (key, loc) in &self.map {
             let key_bytes = key.as_bytes();
             writer.write_all(&(key_bytes.len() as u32).to_le_bytes())?;
+            writer.write_all(key_bytes)?;
+
+            writer.write_all(&loc.shard.to_le_bytes())?;
+            writer.write_all(&loc.offset.to_le_bytes())?;
+            writer.write_all(&loc.size.to_le_bytes())?;
+
+            let hash_bytes = loc.blake3.as_bytes();
+            writer.write_all(&(hash_bytes.len() as u32).to_le_bytes())?;
+            writer.write_all(hash_bytes)?;
+
+            let expires_at = loc.expires_at.unwrap_or(0);
+            writer.write_all(&expires_at.to_le_bytes())?;
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn load_snapshot(path: impl AsRef<Path>) -> Result<Self> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+
+        let mut magic = [0u8; 8];
+        reader.read_exact(&mut magic)?;
+        let has_ttl = &magic == b"KVINDEX3";
+        if &magic != b"KVINDEX2" && !has_ttl {
+            return Err(crate::Error::Corrupted("Invalid snapshot magic".into()));
+        }
+
+        let mut num_entries_bytes = [0u8; 8];
+        reader.read_exact(&mut num_entries_bytes)?;
+        let num_entries = u64::from_le_bytes(num_entries_bytes);
+
+        let mut index = Index::new();
+
+        for _ in 0..num_entries {
+            let mut key_len_bytes = [0u8; 4];
+            reader.read_exact(&mut key_len_bytes)?;
+            let key_len = u32::from_le_bytes(key_len_bytes) as usize;
+
+            let mut key_bytes = vec![0u8; key_len];
+            reader.read_exact(&mut key_bytes)?;
+            let key = String::from_utf8(key_bytes)
+                .map_err(|_| crate::Error::Corrupted("Invalid UTF-8 in key".into()))?;
+
+            let mut shard_bytes = [0u8; 8];
+            reader.read_exact(&mut shard_bytes)?;
+            let shard = u64::from_le_bytes(shard_bytes);
+
+            let mut offset_bytes = [0u8; 8];
+            reader.read_exact(&mut offset_bytes)?;
+            let offset = u64::from_le_bytes(offset_bytes);
+
+            let mut size_bytes = [0u8; 8];
+            reader.read_exact(&mut size_bytes)?;
+            let size = u64::from_le_bytes(size_bytes);
+
+            let mut hash_len_bytes = [0u8; 4];
+            reader.read_exact(&mut hash_len_bytes)?;
+            let hash_len = u32::from_le_bytes(hash_len_bytes) as usize;
+
+            let mut hash_bytes = vec![0u8; hash_len];
+            reader.read_exact(&mut hash_bytes)?;
+            let blake3 = String::from_utf8(hash_bytes)
+                .map_err(|_| crate::Error::Corrupted("Invalid UTF-8 in hash".into()))?;
+
+            let expires_at = if has_ttl {
+                let mut expires_bytes = [0u8; 8];
+                reader.read_exact(&mut expires_bytes)?;
+                let ts = u64::from_le_bytes(expires_bytes);
+                if ts == 0 {
+                    None
+                } else {
+                    Some(ts)
+                }
+            } else {
+                None
+            };
+
+            index.insert(
+                key,
+                BlobLocation {
+                    shard,
+                    offset,
+                    size,
+                    blake3,
+                    expires_at,
+                },
+            );
+        }
+
+        Ok(index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::blake3_hash;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_index_basic() {
+        let mut index = Index::new();
+
+        index.insert(
+            "key1".to_string(),
+            BlobLocation {
+                shard: 0,
+                offset: 100,
+                size: 1024,
+                blake3: "abc123".to_string(),
+                expires_at: None,
+            },
+        );
+
+        assert_eq!(index.len(), 1);
+        assert!(index.contains("key1"));
+
+        let loc = index.get("key1").unwrap();
+        assert_eq!(loc.shard, 0);
+        assert_eq!(loc.offset, 100);
+        assert_eq!(loc.size, 1024);
+
+        index.remove("key1");
+        assert_eq!(index.len(), 0);
+    }
+
+    #[test]
+    fn test_snapshot_roundtrip() {
+        let dir = tempdir().unwrap();
+        let snapshot_path = dir.path().join("index.snap");
+
