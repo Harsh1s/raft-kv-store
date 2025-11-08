@@ -70,3 +70,75 @@ message BatchResult {
   bool ok = 1;
   string key = 2;
   bytes value = 3;
+  string error = 4;
+}
+
+// ===== 2PC Messages =====
+
+message PrepareRequest {
+  string key = 1;
+  string upload_id = 2;
+  uint64 expected_size = 3;
+  string expected_blake3 = 4;
+}
+
+message PrepareResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message CommitRequest {
+  string upload_id = 1;
+  string key = 2;
+}
+
+message CommitResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message AbortRequest {
+  string upload_id = 1;
+}
+
+message AbortResponse {
+  bool ok = 1;
+}
+
+// ===== Replication Messages =====
+
+message PullRequest {
+  string key = 1;
+  string source_url = 2;
+}
+
+message Chunk {
+  bytes data = 1;
+}
+
+message DeleteRequest {
+  string key = 1;
+}
+
+message DeleteResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+// ===== Health Messages =====
+
+message PingRequest {}
+
+message PingResponse {
+  string volume_id = 1;
+  uint64 uptime_secs = 2;
+  uint64 total_keys = 3;
+  uint64 total_bytes = 4;
+}
+
+message StatsRequest {}
+
+message StatsResponse {
+  uint64 total_keys = 1;
+  uint64 total_bytes = 2;
+  uint64 free_bytes = 3;
