@@ -124,4 +124,3 @@ Complete all sections to ensure traceability and reproducibility.
 - Risks identified:
 - Follow-up actions:
 - Owner:
-- Target date:
