@@ -87,3 +87,92 @@ for i in $(seq 1 ${NUM_COORDS}); do
             PEER_GRPC=$((5001 + (j-1)*2))
             if [ -z "$PEERS" ]; then
                 PEERS="coord-$j:$PEER_GRPC"
+            else
+                PEERS="$PEERS,coord-$j:$PEER_GRPC"
+            fi
+        fi
+    done
+    
+    ./target/release/minikv-coord serve \
+        --id "coord-$i" \
+        --bind "127.0.0.1:${COORD_HTTP}" \
+        --grpc "127.0.0.1:${COORD_GRPC}" \
+        --db "${BENCH_DIR}/coord${i}-db" \
+        --peers "$PEERS" \
+        --replicas ${REPLICAS} \
+        > "${BENCH_DIR}/coord${i}.log" 2>&1 &
+    
+    echo "  Coordinator $i: HTTP=${COORD_HTTP}, gRPC=${COORD_GRPC}"
+done
+
+sleep 2
+echo -e "${GREEN}[OK] Coordinators started${NC}"
+echo ""
+
+# Start volumes
+echo -e "${YELLOW}Starting ${NUM_VOLUMES} volumes...${NC}"
+for i in $(seq 1 ${NUM_VOLUMES}); do
+    VOL_HTTP=$((6000 + (i-1)*2))
+    VOL_GRPC=$((6001 + (i-1)*2))
+    
+    ./target/release/minikv-volume serve \
+        --id "vol-$i" \
+        --bind "127.0.0.1:${VOL_HTTP}" \
+        --grpc "127.0.0.1:${VOL_GRPC}" \
+        --data "${BENCH_DIR}/vol${i}-data" \
+        --wal "${BENCH_DIR}/vol${i}-wal" \
+        --coordinators "http://127.0.0.1:5000" \
+        > "${BENCH_DIR}/vol${i}.log" 2>&1 &
+    
+    echo "  Volume $i: HTTP=${VOL_HTTP}, gRPC=${VOL_GRPC}"
+done
+
+sleep 2
+echo -e "${GREEN}[OK] Volumes started${NC}"
+echo ""
+
+# Wait for cluster to be ready
+echo -n "Waiting for cluster to be ready"
+for i in {1..30}; do
+    if curl -s "http://127.0.0.1:5000/health/live" > /dev/null 2>&1; then
+        echo ""
+        echo -e "${GREEN}[OK] Cluster ready${NC}"
+        break
+    fi
+    echo -n "."
+    sleep 1
+    if [ $i -eq 30 ]; then
+        echo ""
+        echo -e "${RED}[FAIL] Cluster failed to start${NC}"
+        cat "${BENCH_DIR}/coord1.log"
+        exit 1
+    fi
+done
+echo ""
+
+# Create k6 test script
+cat > "${BENCH_DIR}/test.js" << 'EOFK6'
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+import { Rate, Trend } from 'k6/metrics';
+
+const putRate = new Rate('put_success');
+const getRate = new Rate('get_success');
+const putLatency = new Trend('put_latency');
+const getLatency = new Trend('get_latency');
+
+const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:5000';
+const OBJECT_SIZE = parseInt(__ENV.OBJECT_SIZE || '1048576');
+
+export let options = {
+    vus: parseInt(__ENV.VUS || '16'),
+    duration: __ENV.DURATION || '30s',
+    thresholds: {
+        'put_success': ['rate>0.90'],
+        'get_success': ['rate>0.95'],
+    },
+};
+
+function generateData(size) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';

@@ -26,3 +26,31 @@ spec:
     resources:
       requests:
         cpu: "200m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    storage:
+      size: "50Gi"
+      storageClassName: "standard"
+
+  security:
+    tls:
+      enabled: true
+      secretName: minikv-tls
+    authentication:
+      enabled: true
+      adminSecretName: minikv-admin-key
+    encryption:
+      atRest: true
+      keySecretName: minikv-encryption-key
+
+  observability:
+    metrics:
+      enabled: true
+      port: 9090
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
