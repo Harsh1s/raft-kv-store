@@ -991,3 +991,5 @@ mod tests {
 
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("Running"));
+    }
+}

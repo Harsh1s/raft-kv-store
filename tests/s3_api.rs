@@ -136,3 +136,72 @@ async fn wait_for_endpoint(childs: &mut [&mut Child], url: &str) {
             if let Some(status) = child.try_wait().expect("Error waiting for server") {
                 panic!("A server exited prematurely (exit code {status})");
             }
+        }
+        if start.elapsed() > Duration::from_secs(30) {
+            panic!("Timeout: endpoint not ready at {url}");
+        }
+        if let Ok(resp) = client.get(url).send().await {
+            if resp.status().is_success() || resp.status().as_u16() == 404 {
+                break;
+            }
+        }
+        sleep(Duration::from_millis(100));
+    }
+}
+
+#[tokio::test]
+async fn test_s3_put_get() {
+    if resolve_bin(&["CARGO_BIN_EXE_minikv-coord", "CARGO_BIN_EXE_minikv_coord"]).is_none()
+        || resolve_bin(&["CARGO_BIN_EXE_minikv-volume", "CARGO_BIN_EXE_minikv_volume"]).is_none()
+    {
+        eprintln!("Skipping test_s3_put_get: required binary env vars are not set");
+        return;
+    }
+
+    let test_id = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    let coord_http = get_free_port();
+    let coord_grpc = get_free_port();
+    let vol_http = get_free_port();
+    let vol_grpc = get_free_port();
+
+    let (mut coord, coord_data, config_path) = start_coord(coord_http, coord_grpc, &test_id);
+    let live_url = format!("http://127.0.0.1:{}/health/live", coord_http);
+    wait_for_endpoint(&mut [&mut coord], &live_url).await;
+
+    let (mut volume, vol_data, vol_wal) = start_volume(vol_http, vol_grpc, coord_http, &test_id);
+
+    let s3_url = format!("http://127.0.0.1:{}/s3/testbucket/hello.txt", coord_http);
+    wait_for_endpoint(&mut [&mut coord], &s3_url).await;
+
+    let client = Client::new();
+    let data = b"Hello, S3!";
+    let put_resp = client
+        .put(&s3_url)
+        .body(data.as_ref())
+        .send()
+        .await
+        .unwrap();
+    assert!(put_resp.status().is_success(), "PUT failed: {:?}", put_resp);
+    let get_resp = client.get(&s3_url).send().await.unwrap();
+    assert!(get_resp.status().is_success(), "GET failed: {:?}", get_resp);
+    let body = get_resp.bytes().await.unwrap();
+    assert_eq!(body.as_ref(), data, "GET body mismatch");
+
+    let _ = coord.kill();
+    let _ = coord.wait();
+    let _ = volume.kill();
+    let _ = volume.wait();
+
+    let _ = fs::remove_file(config_path);
+    let _ = fs::remove_file(format!("coord-s3-{}.log", test_id));
+    let _ = fs::remove_file(format!("vol-s3-{}.log", test_id));
+    let _ = fs::remove_dir_all(coord_data);
+    let _ = fs::remove_dir_all(vol_data);

@@ -33,38 +33,3 @@ impl VolumeInternal for VolumeGrpcService {
         let inner = req.into_inner();
 
         if inner.key.is_empty() {
-            return Ok(Response::new(PrepareResponse {
-                ok: false,
-                error: "key cannot be empty".to_string(),
-            }));
-        }
-
-        Ok(Response::new(PrepareResponse {
-            ok: true,
-            error: String::new(),
-        }))
-    }
-
-    async fn commit(
-        &self,
-        req: Request<CommitRequest>,
-    ) -> Result<Response<CommitResponse>, Status> {
-        let _inner = req.into_inner();
-
-        Ok(Response::new(CommitResponse {
-            ok: true,
-            error: String::new(),
-        }))
-    }
-
-    async fn abort(&self, req: Request<AbortRequest>) -> Result<Response<AbortResponse>, Status> {
-        let _inner = req.into_inner();
-
-        Ok(Response::new(AbortResponse { ok: true }))
-    }
-
-    async fn pull(&self, _req: Request<PullRequest>) -> Result<Response<Self::PullStream>, Status> {
-        Err(Status::unimplemented("Pull not implemented"))
-    }
-
-    async fn delete(
