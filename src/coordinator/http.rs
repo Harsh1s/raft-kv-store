@@ -1669,3 +1669,4 @@ async fn admin_vector_stats() -> impl IntoResponse {
         "dimensions": dims,
         "path": VECTOR_INDEX_PATH
     }))
+}
