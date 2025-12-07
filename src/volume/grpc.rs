@@ -33,3 +33,73 @@ impl VolumeInternal for VolumeGrpcService {
         let inner = req.into_inner();
 
         if inner.key.is_empty() {
+            return Ok(Response::new(PrepareResponse {
+                ok: false,
+                error: "key cannot be empty".to_string(),
+            }));
+        }
+
+        Ok(Response::new(PrepareResponse {
+            ok: true,
+            error: String::new(),
+        }))
+    }
+
+    async fn commit(
+        &self,
+        req: Request<CommitRequest>,
+    ) -> Result<Response<CommitResponse>, Status> {
+        let _inner = req.into_inner();
+
+        Ok(Response::new(CommitResponse {
+            ok: true,
+            error: String::new(),
+        }))
+    }
+
+    async fn abort(&self, req: Request<AbortRequest>) -> Result<Response<AbortResponse>, Status> {
+        let _inner = req.into_inner();
+
+        Ok(Response::new(AbortResponse { ok: true }))
+    }
+
+    async fn pull(&self, _req: Request<PullRequest>) -> Result<Response<Self::PullStream>, Status> {
+        Err(Status::unimplemented("Pull not implemented"))
+    }
+
+    async fn delete(
+        &self,
+        req: Request<DeleteRequest>,
+    ) -> Result<Response<DeleteResponse>, Status> {
+        let inner = req.into_inner();
+
+        match self.store.lock().unwrap().delete(&inner.key) {
+            Ok(_) => Ok(Response::new(DeleteResponse {
+                ok: true,
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(DeleteResponse {
+                ok: false,
+                error: e.to_string(),
+            })),
+        }
+    }
+
+    async fn ping(&self, _req: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
+        Ok(Response::new(PingResponse {
+            volume_id: "vol-1".to_string(),
+            uptime_secs: 0,
+            total_keys: 0,
+            total_bytes: 0,
+        }))
+    }
+
+    async fn stats(&self, _req: Request<StatsRequest>) -> Result<Response<StatsResponse>, Status> {
+        Ok(Response::new(StatsResponse {
+            total_keys: 0,
+            total_bytes: 0,
+            free_bytes: 0,
+            shards: vec![],
+        }))
+    }
+
