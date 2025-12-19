@@ -52,3 +52,57 @@ curl -s http://localhost:8080/health/ready
 curl -s http://localhost:8080/metrics | head -n 40
 
 # Sample reads during outage
+curl -i -s "http://localhost:8080/s3/test-bucket/key-10"
+curl -i -s "http://localhost:8080/s3/test-bucket/key-500"
+
+# Restart failed volume
+docker start minikv-volume-1
+
+# Post-recovery checks
+curl -s http://localhost:8080/health/live
+curl -s http://localhost:8080/health/ready
+curl -s http://localhost:8080/metrics | head -n 40
+```
+
+## Verification Points
+
+- Health endpoints remain responsive during single-volume outage.
+- Read/write operations continue with degraded capacity.
+- Restarted volume rejoins cluster.
+- Data consistency remains acceptable after recovery.
+
+## Observed Results
+
+- Coordinator remained reachable throughout the outage window.
+- Read operations on unaffected paths continued successfully.
+- Write operations completed with expected degraded behavior.
+- After restart, the stopped volume returned to healthy participation.
+
+## Metrics and Logs
+
+- Metrics endpoint sample (`GET /metrics`): reachable before, during, and after outage.
+- Health endpoints (`GET /health/live`, `GET /health/ready`): returned success status.
+- Coordinator logs: showed volume down event and subsequent recovery.
+- Volume logs: restarted volume rejoined and resumed normal processing.
+- Additional evidence: container lifecycle events from Docker.
+
+## Scenario Status
+
+- [x] Pass
+- [ ] Fail
+- Notes: Single-volume failure tolerance behaves as expected for this topology.
+
+## Feature-Specific Checklist
+
+### Kubernetes Operator and Cloud-Native
+
+- [ ] CRD applied and recognized
+- [ ] Operator reconciliation successful
+- [ ] StatefulSet, Services, ConfigMaps, RBAC validated
+- [ ] Scaling behavior verified
+
+### Time-Series
+
+- [ ] `POST /ts/write` validated
+- [ ] `POST /ts/query` validated
+- [ ] Aggregation/filter behavior verified
