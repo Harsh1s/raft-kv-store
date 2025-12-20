@@ -220,4 +220,3 @@ Success criteria:
 
 - Record commands, timestamps, and environment.
 - Capture logs and metrics for failures.
-- Store outcomes in `tests/RESULT_TEMPLATE.md`.

@@ -152,3 +152,82 @@ impl MetadataStore {
 
     pub fn get_healthy_volumes(&self) -> Result<Vec<VolumeMetadata>> {
         Ok(self
+            .list_volumes()?
+            .into_iter()
+            .filter(|v| v.state.is_healthy())
+            .collect())
+    }
+
+    pub fn put_config(&self, key: &str, value: &[u8]) -> Result<()> {
+        let cf = self.db.cf_handle(CF_CONFIG).unwrap();
+        self.db.put_cf(cf, key.as_bytes(), value)?;
+        Ok(())
+    }
+
+    pub fn get_config(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let cf = self.db.cf_handle(CF_CONFIG).unwrap();
+        Ok(self.db.get_cf(cf, key.as_bytes())?)
+    }
+
+    pub fn flush(&self) -> Result<()> {
+        self.db.flush()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_metadata_store() {
+        let dir = tempdir().unwrap();
+        let store = MetadataStore::open(dir.path().join("test.db")).unwrap();
+
+        let meta = KeyMetadata {
+            key: "test-key".to_string(),
+            replicas: vec!["vol-1".to_string(), "vol-2".to_string()],
+            size: 1024,
+            blake3: "abc123".to_string(),
+            created_at: 1234567890,
+            updated_at: 1234567890,
+            state: KeyState::Active,
+        };
+        store.put_key(&meta).unwrap();
+
+        let retrieved = store.get_key("test-key").unwrap().unwrap();
+        assert_eq!(retrieved.key, "test-key");
+        assert_eq!(retrieved.replicas.len(), 2);
+
+        store.delete_key("test-key").unwrap();
+        assert!(store.get_key("test-key").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_volume_registry() {
+        let dir = tempdir().unwrap();
+        let store = MetadataStore::open(dir.path().join("test.db")).unwrap();
+
+        let vol = VolumeMetadata {
+            volume_id: "vol-1".to_string(),
+            address: "http://localhost:6000".to_string(),
+            grpc_address: "http://localhost:6001".to_string(),
+            state: NodeState::Alive,
+            shards: vec![0, 1, 2],
+            total_keys: 100,
+            total_bytes: 1024000,
+            free_bytes: 5000000,
+            last_heartbeat: 1234567890,
+        };
+
+        store.put_volume(&vol).unwrap();
+
+        let retrieved = store.get_volume("vol-1").unwrap().unwrap();
+        assert_eq!(retrieved.volume_id, "vol-1");
+        assert_eq!(retrieved.shards.len(), 3);
+
+        let volumes = store.list_volumes().unwrap();
+        assert_eq!(volumes.len(), 1);
+    }
+}
