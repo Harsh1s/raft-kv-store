@@ -260,3 +260,134 @@ spec:
                           priority:
                             type: integer
                 
+                timeseries:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    retentionDays:
+                      type: integer
+                      default: 30
+                    downsampleRules:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          after:
+                            type: string
+                            description: "Duration after which to downsample (e.g., '7d')"
+                          resolution:
+                            type: string
+                            description: "Target resolution (e.g., '1h')"
+                
+                tiering:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    hotTier:
+                      type: object
+                      properties:
+                        maxAge:
+                          type: string
+                          default: "24h"
+                        storageClass:
+                          type: string
+                          default: "fast-ssd"
+                    warmTier:
+                      type: object
+                      properties:
+                        maxAge:
+                          type: string
+                          default: "7d"
+                        storageClass:
+                          type: string
+                          default: "standard"
+                    coldTier:
+                      type: object
+                      properties:
+                        storageClass:
+                          type: string
+                          default: "archive"
+            
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: ["Pending", "Creating", "Running", "Updating", "Failed", "Deleting"]
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                coordinatorStatus:
+                  type: object
+                  properties:
+                    ready:
+                      type: integer
+                    total:
+                      type: integer
+                    leader:
+                      type: string
+                volumeStatus:
+                  type: object
+                  properties:
+                    ready:
+                      type: integer
+                    total:
+                      type: integer
+                    totalStorage:
+                      type: string
+                    usedStorage:
+                      type: string
+                endpoints:
+                  type: object
+                  properties:
+                    http:
+                      type: string
+                    grpc:
+                      type: string
+                    metrics:
+                      type: string
+                version:
+                  type: string
+                lastBackup:
+                  type: string
+                  format: date-time
+      
+      subresources:
+        status: {}
+        scale:
+          specReplicasPath: .spec.volumes.replicas
+          statusReplicasPath: .status.volumeStatus.ready
+      
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Coordinators
+          type: string
+          jsonPath: .status.coordinatorStatus.ready
+        - name: Volumes
+          type: string
+          jsonPath: .status.volumeStatus.ready
+        - name: Storage
+          type: string
+          jsonPath: .status.volumeStatus.usedStorage
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
