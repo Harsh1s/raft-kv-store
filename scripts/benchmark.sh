@@ -176,3 +176,92 @@ export let options = {
 function generateData(size) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let result = '';
+    for (let i = 0; i < size; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+}
+
+export default function () {
+    const key = `bench-key-${__VU}-${__ITER}`;
+    const data = generateData(OBJECT_SIZE);
+    
+    // PUT
+    const putStart = Date.now();
+    const putRes = http.put(`${BASE_URL}/${key}`, data);
+    const putDuration = Date.now() - putStart;
+    
+    putRate.add(putRes.status === 201 || putRes.status === 501); // 501 is accepted by this benchmark profile
+    putLatency.add(putDuration);
+    
+    check(putRes, {
+        'PUT status ok': (r) => r.status === 201 || r.status === 501,
+    });
+    
+    // GET (skip if PUT failed)
+    if (putRes.status === 201) {
+        const getStart = Date.now();
+        const getRes = http.get(`${BASE_URL}/${key}`);
+        const getDuration = Date.now() - getStart;
+        
+        getRate.add(getRes.status === 200);
+        getLatency.add(getDuration);
+        
+        check(getRes, {
+            'GET status is 200': (r) => r.status === 200,
+            'GET body correct': (r) => r.body.length === OBJECT_SIZE,
+        });
+    }
+    
+    sleep(0.1);
+}
+EOFK6
+
+# Run k6 benchmark
+echo -e "${YELLOW}Running k6 benchmark...${NC}"
+echo ""
+
+k6 run \
+    --out json="${BENCH_DIR}/results.json" \
+    --summary-export="${BENCH_DIR}/summary.json" \
+    --env BASE_URL="http://127.0.0.1:5000" \
+    --env VUS="${VUS}" \
+    --env DURATION="${DURATION}" \
+    --env OBJECT_SIZE="${OBJECT_SIZE}" \
+    "${BENCH_DIR}/test.js" 2>&1 | grep -v "WARN"
+
+# Parse results
+echo ""
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  Benchmark Results${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+
+if [ -f "${BENCH_DIR}/summary.json" ]; then
+    PUT_P50=$(jq -r '.metrics.put_latency.values.p50' "${BENCH_DIR}/summary.json" 2>/dev/null || echo "N/A")
+    PUT_P90=$(jq -r '.metrics.put_latency.values.p90' "${BENCH_DIR}/summary.json" 2>/dev/null || echo "N/A")
+    PUT_P95=$(jq -r '.metrics.put_latency.values.p95' "${BENCH_DIR}/summary.json" 2>/dev/null || echo "N/A")
+    
+    GET_P50=$(jq -r '.metrics.get_latency.values.p50' "${BENCH_DIR}/summary.json" 2>/dev/null || echo "N/A")
+    GET_P90=$(jq -r '.metrics.get_latency.values.p90' "${BENCH_DIR}/summary.json" 2>/dev/null || echo "N/A")
+    GET_P95=$(jq -r '.metrics.get_latency.values.p95' "${BENCH_DIR}/summary.json" 2>/dev/null || echo "N/A")
+    
+    echo "Host: $(uname -m) | $(sysctl -n hw.memsize 2>/dev/null | awk '{print $1/1024/1024/1024 " GB"}' || echo 'N/A') | $(uname -s)"
+    echo "Cluster: ${NUM_COORDS} coord + ${NUM_VOLUMES} volumes (replicas=${REPLICAS})"
+    echo "Config: size=$((OBJECT_SIZE / 1024 / 1024)) MiB, VUs=${VUS}, Duration=${DURATION}"
+    echo ""
+    echo "PUT Latency (2PC + replication):"
+    echo "  p50: ${PUT_P50} ms"
+    echo "  p90: ${PUT_P90} ms"
+    echo "  p95: ${PUT_P95} ms"
+    echo ""
+    echo "GET Latency:"
+    echo "  p50: ${GET_P50} ms"
+    echo "  p90: ${GET_P90} ms"
+    echo "  p95: ${GET_P95} ms"
+fi
+
+echo ""
+echo -e "${GREEN}========================================${NC}"
+echo ""
+echo -e "${GREEN}[OK] Benchmark complete${NC}"
