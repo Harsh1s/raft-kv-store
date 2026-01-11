@@ -157,4 +157,3 @@ spec:
   minAvailable: 0
   selector:
     matchLabels:
-      app.kubernetes.io/name: minikv-operator
