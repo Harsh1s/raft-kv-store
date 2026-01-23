@@ -742,3 +742,4 @@ mod tests {
         assert_eq!(hottest[0].key, "key2");
         assert_eq!(hottest[1].key, "key1");
     }
+}
