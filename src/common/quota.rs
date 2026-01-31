@@ -282,3 +282,146 @@ impl QuotaManager {
                 limit: quota.rate_limit,
                 window_secs: DEFAULT_RATE_WINDOW.as_secs(),
             }
+        }
+    }
+
+    pub fn record_storage_add(&self, tenant_id: &str, bytes: u64) {
+        let mut usage = self.usage.write().unwrap();
+        let tenant_usage = usage.entry(tenant_id.to_string()).or_default();
+        tenant_usage.add_storage(bytes);
+        tenant_usage.add_objects(1);
+    }
+
+    pub fn record_storage_remove(&self, tenant_id: &str, bytes: u64) {
+        let mut usage = self.usage.write().unwrap();
+        if let Some(tenant_usage) = usage.get_mut(tenant_id) {
+            tenant_usage.remove_storage(bytes);
+            tenant_usage.remove_objects(1);
+        }
+    }
+
+    pub fn to_prometheus(&self) -> String {
+        let mut out = String::new();
+        let usage = self.usage.read().unwrap();
+        let quotas = self.quotas.read().unwrap();
+
+        for (tenant_id, tenant_usage) in usage.iter() {
+            let quota = quotas.get(tenant_id).unwrap_or(&self.default_quota);
+
+            out += &format!(
+                "minikv_tenant_storage_used_bytes{{tenant=\"{}\"}} {}\n",
+                tenant_id, tenant_usage.storage_used
+            );
+            out += &format!(
+                "minikv_tenant_storage_limit_bytes{{tenant=\"{}\"}} {}\n",
+                tenant_id, quota.storage_limit
+            );
+            out += &format!(
+                "minikv_tenant_object_count{{tenant=\"{}\"}} {}\n",
+                tenant_id, tenant_usage.object_count
+            );
+            out += &format!(
+                "minikv_tenant_object_limit{{tenant=\"{}\"}} {}\n",
+                tenant_id, quota.object_limit
+            );
+        }
+
+        out
+    }
+}
+
+impl Default for QuotaManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_quota() {
+        let manager = QuotaManager::new();
+        let result = manager.check_storage("test_tenant", 1024);
+        assert!(result.is_allowed());
+    }
+
+    #[test]
+    fn test_storage_limit() {
+        let manager = QuotaManager::new();
+
+        let quota = TenantQuota::with_limits("test_tenant".to_string(), 1024, 10, 100);
+        manager.set_quota(quota);
+
+        let result = manager.check_storage("test_tenant", 512);
+        assert!(result.is_allowed());
+
+        manager.record_storage_add("test_tenant", 512);
+
+        let result = manager.check_storage("test_tenant", 1024);
+        assert!(!result.is_allowed());
+        assert!(matches!(
+            result,
+            QuotaCheckResult::StorageLimitExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn test_object_limit() {
+        let manager = QuotaManager::new();
+
+        let quota = TenantQuota::with_limits("test_tenant".to_string(), 1024 * 1024, 2, 100);
+        manager.set_quota(quota);
+
+        manager.record_storage_add("test_tenant", 100);
+        manager.record_storage_add("test_tenant", 100);
+
+        let result = manager.check_objects("test_tenant");
+        assert!(!result.is_allowed());
+        assert!(matches!(
+            result,
+            QuotaCheckResult::ObjectLimitExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn test_disabled_tenant() {
+        let manager = QuotaManager::new();
+
+        let mut quota = TenantQuota::new("disabled_tenant".to_string());
+        quota.enabled = false;
+        manager.set_quota(quota);
+
+        let result = manager.check_storage("disabled_tenant", 1);
+        assert!(!result.is_allowed());
+        assert!(matches!(result, QuotaCheckResult::TenantDisabled));
+    }
+
+    #[test]
+    fn test_rate_limiting() {
+        let manager = QuotaManager::new();
+
+        let quota = TenantQuota::with_limits("rate_test".to_string(), 1024 * 1024, 1000, 3);
+        manager.set_quota(quota);
+
+        assert!(manager.check_and_record_request("rate_test").is_allowed());
+        assert!(manager.check_and_record_request("rate_test").is_allowed());
+        assert!(manager.check_and_record_request("rate_test").is_allowed());
+
+        let result = manager.check_and_record_request("rate_test");
+        assert!(!result.is_allowed());
+        assert!(matches!(result, QuotaCheckResult::RateLimitExceeded { .. }));
+    }
+
+    #[test]
+    fn test_unlimited_quota() {
+        let manager = QuotaManager::new();
+
+        let quota = TenantQuota::unlimited("unlimited_tenant".to_string());
+        manager.set_quota(quota);
+
+        let result = manager.check_storage("unlimited_tenant", u64::MAX / 2);
+        assert!(result.is_allowed());
+    }
+}
