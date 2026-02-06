@@ -98,3 +98,53 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::Compact { shard } => {
+            let report = compact_cluster(&cli.coordinator, shard).await?;
+            println!("Compaction report:");
+            println!("  Volumes compacted: {}", report.volumes_compacted);
+            println!("  Bytes freed: {}", report.bytes_freed);
+        }
+
+        Commands::Put { key, file } => {
+            let value = std::fs::read(&file)?;
+            let url = format!("{}/{}", cli.coordinator, key);
+            let client = reqwest::Client::new();
+            let resp = client.post(&url).body(value).send().await?;
+            println!("PUT {}: {}", key, resp.status());
+        }
+
+        Commands::Rebalance {} => {
+            auto_rebalance_cluster(&cli.coordinator).await?;
+            println!("Auto-rebalancing triggered.");
+        }
+
+        Commands::Upgrade {} => {
+            prepare_seamless_upgrade(&cli.coordinator).await?;
+            println!("Seamless upgrade prepared.");
+        }
+
+        Commands::Stream { key } => {
+            stream_large_blob("volume-1", &key).await?;
+            println!("Streaming large blob for key: {}", key);
+        }
+
+        Commands::Get { key, output } => {
+            let url = format!("{}/{}", cli.coordinator, key);
+            let resp = reqwest::get(&url).await?;
+            let value = resp.text().await?;
+            if output.as_os_str().is_empty() {
+                println!("GET {}: {}", key, value);
+            } else {
+                std::fs::write(&output, &value)?;
+                println!("GET {}: value written to file", key);
+            }
+        }
+
+        Commands::Delete { key } => {
+            let url = format!("{}/{}", cli.coordinator, key);
+            let client = reqwest::Client::new();
+            let resp = client.delete(&url).send().await?;
+            println!("DELETE {}: {}", key, resp.status());
+        }
+    }
+
+    Ok(())
