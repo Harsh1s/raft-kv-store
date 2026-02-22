@@ -32,3 +32,37 @@ impl Coordinator {
             self.config.num_shards,
             self.config.replicas,
         )));
+
+        let raft = Arc::new(RaftNode::new(self.node_id.clone()));
+        let _raft_handle = start_raft_tasks(raft.clone());
+
+        let http_state = CoordState {
+            metadata: metadata.clone(),
+            placement: placement.clone(),
+            raft: raft.clone(),
+        };
+        let http_router = create_router(http_state);
+
+        let use_tls = self.config.tls_cert_path.is_some() && self.config.tls_key_path.is_some();
+        use std::future::Future;
+        use std::pin::Pin;
+        let http_server: Pin<
+            Box<dyn Future<Output = std::result::Result<(), std::io::Error>> + Send>,
+        > = if use_tls {
+            let cert_path = self.config.tls_cert_path.as_ref().unwrap();
+            let key_path = self.config.tls_key_path.as_ref().unwrap();
+            let rustls_config = RustlsConfig::from_pem_file(cert_path, key_path)
+                .await
+                .unwrap();
+            Box::pin(
+                bind_rustls(self.config.bind_addr, rustls_config)
+                    .serve(http_router.clone().into_make_service()),
+            )
+        } else {
+            let http_listener = tokio::net::TcpListener::bind(self.config.bind_addr).await?;
+            Box::pin(axum::serve(http_listener, http_router.clone()).into_future())
+        };
+
+        let grpc_service = CoordGrpcService::new();
+        let grpc_server = if let (Some(cert_path), Some(key_path)) = (
+            self.config.tls_cert_path.as_ref(),
