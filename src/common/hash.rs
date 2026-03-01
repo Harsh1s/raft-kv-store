@@ -229,4 +229,3 @@ mod tests {
             assert_eq!(assigned.len(), 2);
         }
     }
-}
