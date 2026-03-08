@@ -58,3 +58,33 @@ RAM organizes:
   [https://www.linkedin.com/company/rust-aix-marseille-ram](https://www.linkedin.com/company/rust-aix-marseille-ram)
 
 
+
+## How Can You Get Involved?
+
+- Join our **Discord** now — introduce yourself and say hi!
+- Follow us on **LinkedIn** for upcoming events and news
+- Suggest a topic, propose a talk, or simply ask your first Rust question!
+- Bring your friends, colleagues, or classmates — more people means more fun
+- Help us build RAM together: propose ideas, animate a discussion, or co-organize with us
+
+
+
+## Our Values
+
+- **Radical inclusion**: Everyone is truly welcome, regardless of background, age, gender, experience, origin, or ability.
+- **No gatekeeping**: All questions are valid. No need to be a “pro” — sharing and learning matter most.
+- **Respect and kindness** are non-negotiable. See our [Code of Conduct](./CODE_OF_CONDUCT.md) for the details.
+
+
+
+## In Short
+
+> RAM is your space to learn Rust, create meaningful projects, meet people, and have fun together, locally and remotely.
+
+Whether you want to code, to talk, to listen, or to just see what Rust is about, **RAM has a place for you**.
+
+
+
+See you soon on [Discord](https://discord.gg/zgGWvVFJQg) and [LinkedIn](https://www.linkedin.com/company/rust-aix-marseille-ram)!
+
+_Let’s build an inclusive Rust community in Provence and connected spaces._
