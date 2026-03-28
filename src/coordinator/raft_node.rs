@@ -364,4 +364,3 @@ pub fn start_raft_tasks(node: Arc<RaftNode>) -> tokio::task::JoinHandle<()> {
             }
         }
     })
-}
