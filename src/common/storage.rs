@@ -127,5 +127,3 @@ impl Storage {
     }
     pub fn delete(&self, key: &str) {
         self.backend.delete(key)
-    }
-}
