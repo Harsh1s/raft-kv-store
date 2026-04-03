@@ -106,3 +106,57 @@ curl -s http://localhost:8080/metrics | head -n 40
 - [ ] `POST /ts/write` validated
 - [ ] `POST /ts/query` validated
 - [ ] Aggregation/filter behavior verified
+
+### Vector Search
+
+- [ ] `POST /vector/upsert` validated
+- [ ] `POST /vector/query` validated
+- [ ] `GET /admin/vector/stats` validated
+- [ ] Persistence across restart verified
+
+### Geo-Partitioning
+
+- [ ] Routing strategies validated
+- [ ] Failover validated
+- [ ] Geo-fencing validated (if configured)
+
+### Data Tiering
+
+- [ ] Tier transitions validated
+- [ ] Readability after movement validated
+
+### io_uring (Linux)
+
+- [ ] io_uring path active when enabled
+- [ ] Fallback path validated
+
+### Reliability and Consistency
+
+- [x] Node failure recovery validated
+- [ ] Split-brain resistance validated
+- [ ] Consistency across replicas validated
+
+### Operations and Security
+
+- [ ] Compaction and repair safety validated
+- [ ] Audit logging validated
+- [ ] Persistent backend restart durability validated
+
+### Watch and Subscribe
+
+- [ ] `/watch/ws` validated
+- [ ] `/watch/sse` validated
+- [ ] Event payload and ordering validated
+
+## Attachments
+
+- Screenshots: N/A
+- Log extracts: pending archive
+- Metrics snapshots: pending archive
+- Additional artifacts: Docker event timeline
+
+## Final Notes
+
+- Risks identified: Multi-volume concurrent failure not covered by this run.
+- Follow-up actions: Execute split-brain and consistency scenarios in the same environment.
+- Owner: Em

@@ -139,3 +139,4 @@ release-preflight:
 	bash ./scripts/release_ga.sh --fast
 
 release-preflight-full:
+	bash ./scripts/release_ga.sh
