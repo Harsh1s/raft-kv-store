@@ -103,3 +103,5 @@ impl VolumeInternal for VolumeGrpcService {
         }))
     }
 
+    type PullStream = tokio_stream::wrappers::ReceiverStream<Result<Chunk, Status>>;
+}

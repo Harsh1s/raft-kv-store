@@ -286,3 +286,147 @@ impl ReplicationManager {
     }
 
     pub fn resolve_conflict<'a>(
+        &self,
+        local: &'a ReplicationEvent,
+        remote: &'a ReplicationEvent,
+    ) -> &'a ReplicationEvent {
+        match self.config.conflict_resolution {
+            ConflictResolution::LastWriteWins => {
+                if local.timestamp >= remote.timestamp {
+                    local
+                } else {
+                    remote
+                }
+            }
+            ConflictResolution::VectorClock => {
+                if let (Some(local_vc), Some(remote_vc)) =
+                    (&local.vector_clock, &remote.vector_clock)
+                {
+                    if local_vc.dominates(remote_vc) {
+                        local
+                    } else if remote_vc.dominates(local_vc) {
+                        remote
+                    } else if local.timestamp >= remote.timestamp {
+                        local
+                    } else {
+                        remote
+                    }
+                } else if local.timestamp >= remote.timestamp {
+                    local
+                } else {
+                    remote
+                }
+            }
+            ConflictResolution::LocalFirst => local,
+            ConflictResolution::PrimaryFirst => {
+                if local.source_dc == "dc1" {
+                    local
+                } else if remote.source_dc == "dc1" {
+                    remote
+                } else if local.timestamp >= remote.timestamp {
+                    local
+                } else {
+                    remote
+                }
+            }
+        }
+    }
+
+    pub fn config(&self) -> &ReplicationConfig {
+        &self.config
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        self.status
+            .read()
+            .unwrap()
+            .values()
+            .all(|s| s.healthy && s.lag_secs <= self.config.max_lag_secs)
+    }
+
+    pub fn shutdown(&self) {
+        *self.shutdown.write().unwrap() = true;
+    }
+}
+
+pub static REPLICATION_MANAGER: once_cell::sync::Lazy<RwLock<Option<ReplicationManager>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(None));
+
+pub fn init_replication(config: ReplicationConfig) -> mpsc::Receiver<ReplicationEvent> {
+    let (manager, rx) = ReplicationManager::new(config);
+    *REPLICATION_MANAGER.write().unwrap() = Some(manager);
+    rx
+}
+
+pub fn get_replication_manager(
+) -> Option<std::sync::RwLockReadGuard<'static, Option<ReplicationManager>>> {
+    let guard = REPLICATION_MANAGER.read().unwrap();
+    if guard.is_some() {
+        Some(guard)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vector_clock_increment() {
+        let mut vc = VectorClock::new();
+        vc.increment(&"dc1".to_string());
+        vc.increment(&"dc1".to_string());
+        vc.increment(&"dc2".to_string());
+
+        assert_eq!(vc.get(&"dc1".to_string()), 2);
+        assert_eq!(vc.get(&"dc2".to_string()), 1);
+        assert_eq!(vc.get(&"dc3".to_string()), 0);
+    }
+
+    #[test]
+    fn test_vector_clock_merge() {
+        let mut vc1 = VectorClock::new();
+        vc1.clocks.insert("dc1".to_string(), 3);
+        vc1.clocks.insert("dc2".to_string(), 1);
+
+        let mut vc2 = VectorClock::new();
+        vc2.clocks.insert("dc1".to_string(), 2);
+        vc2.clocks.insert("dc2".to_string(), 4);
+        vc2.clocks.insert("dc3".to_string(), 1);
+
+        vc1.merge(&vc2);
+
+        assert_eq!(vc1.get(&"dc1".to_string()), 3);
+        assert_eq!(vc1.get(&"dc2".to_string()), 4);
+        assert_eq!(vc1.get(&"dc3".to_string()), 1);
+    }
+
+    #[test]
+    fn test_vector_clock_dominates() {
+        let mut vc1 = VectorClock::new();
+        vc1.clocks.insert("dc1".to_string(), 3);
+        vc1.clocks.insert("dc2".to_string(), 2);
+
+        let mut vc2 = VectorClock::new();
+        vc2.clocks.insert("dc1".to_string(), 2);
+        vc2.clocks.insert("dc2".to_string(), 1);
+
+        assert!(vc1.dominates(&vc2));
+        assert!(!vc2.dominates(&vc1));
+    }
+
+    #[test]
+    fn test_vector_clock_concurrent() {
+        let mut vc1 = VectorClock::new();
+        vc1.clocks.insert("dc1".to_string(), 3);
+        vc1.clocks.insert("dc2".to_string(), 1);
+
+        let mut vc2 = VectorClock::new();
+        vc2.clocks.insert("dc1".to_string(), 2);
+        vc2.clocks.insert("dc2".to_string(), 4);
+
+        assert!(vc1.is_concurrent(&vc2));
+        assert!(vc2.is_concurrent(&vc1));
+    }
+}
