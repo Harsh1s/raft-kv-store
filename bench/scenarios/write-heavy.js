@@ -52,3 +52,30 @@ export default function () {
         
         writeSuccess.add(res.status === 201 || res.status === 501);
         writeLatency.add(duration);
+        bytesWritten.add(OBJECT_SIZE);
+        
+        check(res, {
+            'write ok': (r) => r.status === 201 || r.status === 501,
+        });
+        
+        if (res.status === 201) {
+            writtenKeys.push(key);
+        }
+    } else {
+        if (writtenKeys.length > 0) {
+            const key = writtenKeys[Math.floor(Math.random() * writtenKeys.length)];
+            
+            const start = Date.now();
+            const res = http.get(`${BASE_URL}/${key}`);
+            const duration = Date.now() - start;
+            
+            readSuccess.add(res.status === 200);
+            readLatency.add(duration);
+            
+            check(res, {
+                'read ok': (r) => r.status === 200,
+            });
+        }
+    }
+    
+    sleep(0.1);
