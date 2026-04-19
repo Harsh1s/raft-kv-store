@@ -135,3 +135,140 @@ impl Gauge {
 }
 
 #[derive(Debug)]
+pub struct EndpointMetrics {
+    pub requests_total: Counter,
+    pub requests_success: Counter,
+    pub requests_error: Counter,
+    pub latency: Histogram,
+}
+
+impl EndpointMetrics {
+    pub fn new() -> Self {
+        Self {
+            requests_total: Counter::new(),
+            requests_success: Counter::new(),
+            requests_error: Counter::new(),
+            latency: Histogram::new(),
+        }
+    }
+}
+
+impl Default for EndpointMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+pub struct MetricsRegistry {
+    endpoints: Mutex<HashMap<String, Arc<EndpointMetrics>>>,
+
+    pub total_requests: Counter,
+    pub total_errors: Counter,
+    pub total_bytes_read: Counter,
+    pub total_bytes_written: Counter,
+
+    pub active_connections: Gauge,
+    pub keys_with_ttl: Gauge,
+    pub compressed_blobs: Gauge,
+    pub rate_limited_requests: Counter,
+
+    start_time: Instant,
+}
+
+impl MetricsRegistry {
+    pub fn new() -> Self {
+        Self {
+            endpoints: Mutex::new(HashMap::new()),
+            total_requests: Counter::new(),
+            total_errors: Counter::new(),
+            total_bytes_read: Counter::new(),
+            total_bytes_written: Counter::new(),
+            active_connections: Gauge::new(),
+            keys_with_ttl: Gauge::new(),
+            compressed_blobs: Gauge::new(),
+            rate_limited_requests: Counter::new(),
+            start_time: Instant::now(),
+        }
+    }
+
+    pub fn endpoint(&self, path: &str) -> Arc<EndpointMetrics> {
+        let mut endpoints = self.endpoints.lock().unwrap();
+        endpoints
+            .entry(path.to_string())
+            .or_insert_with(|| Arc::new(EndpointMetrics::new()))
+            .clone()
+    }
+
+    pub fn record_request(&self, path: &str, duration: Duration, success: bool) {
+        let endpoint = self.endpoint(path);
+
+        endpoint.requests_total.inc();
+        endpoint.latency.observe(duration.as_secs_f64() * 1000.0); // Convert to ms
+
+        self.total_requests.inc();
+
+        if success {
+            endpoint.requests_success.inc();
+        } else {
+            endpoint.requests_error.inc();
+            self.total_errors.inc();
+        }
+    }
+
+    pub fn uptime_seconds(&self) -> u64 {
+        self.start_time.elapsed().as_secs()
+    }
+
+    pub fn to_prometheus(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+
+        out.push_str("# HELP minikv_requests_total Total number of requests\n");
+        out.push_str("# TYPE minikv_requests_total counter\n");
+        writeln!(out, "minikv_requests_total {}", self.total_requests.get()).unwrap();
+
+        out.push_str("# HELP minikv_errors_total Total number of errors\n");
+        out.push_str("# TYPE minikv_errors_total counter\n");
+        writeln!(out, "minikv_errors_total {}", self.total_errors.get()).unwrap();
+
+        out.push_str("# HELP minikv_bytes_read_total Total bytes read\n");
+        out.push_str("# TYPE minikv_bytes_read_total counter\n");
+        writeln!(
+            out,
+            "minikv_bytes_read_total {}",
+            self.total_bytes_read.get()
+        )
+        .unwrap();
+
+        out.push_str("# HELP minikv_bytes_written_total Total bytes written\n");
+        out.push_str("# TYPE minikv_bytes_written_total counter\n");
+        writeln!(
+            out,
+            "minikv_bytes_written_total {}",
+            self.total_bytes_written.get()
+        )
+        .unwrap();
+
+        out.push_str("# HELP minikv_active_connections Current active connections\n");
+        out.push_str("# TYPE minikv_active_connections gauge\n");
+        writeln!(
+            out,
+            "minikv_active_connections {}",
+            self.active_connections.get()
+        )
+        .unwrap();
+
+        out.push_str("# HELP minikv_keys_with_ttl Number of keys with TTL\n");
+        out.push_str("# TYPE minikv_keys_with_ttl gauge\n");
+        writeln!(out, "minikv_keys_with_ttl {}", self.keys_with_ttl.get()).unwrap();
+
+        out.push_str("# HELP minikv_rate_limited_requests Total rate limited requests\n");
+        out.push_str("# TYPE minikv_rate_limited_requests counter\n");
+        writeln!(
+            out,
+            "minikv_rate_limited_requests {}",
+            self.rate_limited_requests.get()
+        )
+        .unwrap();
+

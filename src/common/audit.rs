@@ -64,36 +64,3 @@ impl AuditLogger {
     }
 
     pub fn log_event(
-        &self,
-        event: AuditEventType,
-        actor: impl Into<String>,
-        target: Option<String>,
-        message: impl Into<String>,
-        meta: Option<serde_json::Value>,
-    ) {
-        let entry = AuditEntry {
-            timestamp: Utc::now(),
-            event,
-            actor: actor.into(),
-            target,
-            message: message.into(),
-            meta,
-        };
-        self.log(entry);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_audit_log_stdout() {
-        let logger = AuditLogger::new("/dev/null", true);
-        logger.log_event(
-            AuditEventType::ApiKeyCreated,
-            "admin",
-            Some("key123".to_string()),
-            "API key created",
-            None,
-        );
