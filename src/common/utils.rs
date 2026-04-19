@@ -132,3 +132,72 @@ where
     Fut: std::future::Future<Output = crate::Result<T>>,
 {
     let mut delay = initial_delay;
+
+    for attempt in 0..max_retries {
+        match f().await {
+            Ok(result) => return Ok(result),
+            Err(e) if e.is_retryable() && attempt < max_retries - 1 => {
+                tracing::warn!(
+                    "Retry attempt {} failed: {}, retrying in {:?}",
+                    attempt + 1,
+                    e,
+                    delay
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(crate::Error::Internal("Max retries exceeded".into()))
+}
+
+pub fn generate_upload_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let timestamp = timestamp_now_millis();
+    format!("{}-{}", timestamp, counter)
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    crc32fast::hash(data)
+}
+
+#[allow(clippy::result_large_err)]
+pub fn validate_key(key: &str) -> crate::Result<()> {
+    if key.is_empty() {
+        return Err(crate::Error::InvalidConfig("key cannot be empty".into()));
+    }
+
+    if key.len() > 1024 {
+        return Err(crate::Error::InvalidConfig(
+            "key too long (max 1024 bytes)".into(),
+        ));
+    }
+
+    if key.chars().any(|c| c.is_control()) {
+        return Err(crate::Error::InvalidConfig(
+            "key contains invalid characters".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_decode_key() {
+        let key = "my/path/to/file.txt";
+        let encoded = encode_key(key);
+        assert!(encoded.contains("%2F"));
+
+        let decoded = decode_key(&encoded).unwrap();
+        assert_eq!(decoded, key);
+    }
+}
