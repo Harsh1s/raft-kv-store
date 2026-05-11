@@ -63,3 +63,68 @@ pub async fn auth_middleware(
         .get("X-API-Key")
         .and_then(|v| v.to_str().ok());
 
+    let auth_result = if let Some(header) = auth_header {
+        state.key_store.authenticate(header)
+    } else if let Some(key) = api_key_header {
+        state.key_store.validate_key(key)
+    } else {
+        let is_read = matches!(request.method().as_str(), "GET" | "HEAD" | "OPTIONS");
+        if is_read && !state.config.require_auth_for_reads {
+            request.extensions_mut().insert(AuthExtension(None));
+            return next.run(request).await;
+        }
+        AuthResult::Missing
+    };
+
+    match auth_result {
+        AuthResult::Ok(ctx) => {
+            state.key_store.touch_key(&ctx.key_id);
+            request.extensions_mut().insert(AuthExtension(Some(ctx)));
+            next.run(request).await
+        }
+        AuthResult::Missing => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Authentication required",
+                "hint": "Provide Authorization header with 'Bearer <jwt>' or 'ApiKey <key>'"
+            })),
+        )
+            .into_response(),
+        AuthResult::Invalid(msg) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Invalid credentials",
+                "message": msg
+            })),
+        )
+            .into_response(),
+        AuthResult::Expired => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Credentials expired",
+                "hint": "Please generate a new API key or refresh your token"
+            })),
+        )
+            .into_response(),
+        AuthResult::Forbidden(msg) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Access denied",
+                "message": msg
+            })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn require_write_middleware(request: Request<Body>, next: Next) -> Response {
+    if let Some(AuthExtension(Some(ref ctx))) = request.extensions().get::<AuthExtension>() {
+        if !ctx.can_write() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "Write permission required",
+                    "role": format!("{:?}", ctx.role)
+                })),
+            )
+                .into_response();
