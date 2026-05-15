@@ -66,3 +66,39 @@ impl Coordinator {
         let grpc_service = CoordGrpcService::new();
         let grpc_server = if let (Some(cert_path), Some(key_path)) = (
             self.config.tls_cert_path.as_ref(),
+            self.config.tls_key_path.as_ref(),
+        ) {
+            use tokio::fs;
+            use tonic::transport::{Identity, ServerTlsConfig};
+            let cert = fs::read(cert_path).await.expect("Cannot read TLS cert");
+            let key = fs::read(key_path).await.expect("Cannot read TLS key");
+            let identity = Identity::from_pem(cert, key);
+            tonic::transport::Server::builder()
+                .tls_config(ServerTlsConfig::new().identity(identity))
+                .expect("Invalid TLS config")
+                .add_service(grpc_service.into_server())
+                .serve(self.config.grpc_addr)
+        } else {
+            tonic::transport::Server::builder()
+                .add_service(grpc_service.into_server())
+                .serve(self.config.grpc_addr)
+        };
+
+        tracing::info!("Coordinator ready ({:?})", raft.get_role());
+
+        tokio::select! {
+            res = http_server => {
+                if let Err(e) = res {
+                    tracing::error!("HTTP server error: {}", e);
+                }
+            }
+            res = grpc_server => {
+                if let Err(e) = res {
+                    tracing::error!("gRPC server error: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
