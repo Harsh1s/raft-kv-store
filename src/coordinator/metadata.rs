@@ -229,5 +229,3 @@ mod tests {
 
         let volumes = store.list_volumes().unwrap();
         assert_eq!(volumes.len(), 1);
-    }
-}
