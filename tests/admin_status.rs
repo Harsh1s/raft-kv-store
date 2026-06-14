@@ -106,3 +106,4 @@ async fn test_admin_status() {
 
     let _ = server.kill();
     let _ = server.wait();
+}

@@ -166,3 +166,87 @@ pub async fn rate_limit_middleware(
             headers.insert(
                 "X-RateLimit-Remaining",
                 remaining.to_string().parse().unwrap(),
+            );
+
+            response
+        }
+        RateLimitResult::Limited { retry_after, limit } => {
+            let mut response = Response::new(Body::from("Too Many Requests"));
+            *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+
+            let headers = response.headers_mut();
+            headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
+            headers.insert("X-RateLimit-Remaining", "0".parse().unwrap());
+            headers.insert(
+                "Retry-After",
+                retry_after.as_secs().to_string().parse().unwrap(),
+            );
+
+            response
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_token_bucket() {
+        let mut bucket = TokenBucket::new(10, 1.0);
+
+        for _ in 0..10 {
+            assert!(bucket.try_consume());
+        }
+
+        assert!(!bucket.try_consume());
+    }
+
+    #[test]
+    fn test_rate_limiter() {
+        let config = RateLimitConfig {
+            burst_size: 5,
+            requests_per_second: 1.0,
+            window_duration: Duration::from_secs(60),
+            enabled: true,
+        };
+
+        let limiter = RateLimiter::new(config);
+
+        for _ in 0..5 {
+            match limiter.check("127.0.0.1") {
+                RateLimitResult::Allowed { .. } => {}
+                RateLimitResult::Limited { .. } => panic!("Should be allowed"),
+            }
+        }
+
+        match limiter.check("127.0.0.1") {
+            RateLimitResult::Allowed { .. } => panic!("Should be limited"),
+            RateLimitResult::Limited { .. } => {}
+        }
+
+        match limiter.check("192.168.1.1") {
+            RateLimitResult::Allowed { .. } => {}
+            RateLimitResult::Limited { .. } => panic!("Different IP should be allowed"),
+        }
+    }
+
+    #[test]
+    fn test_rate_limiter_disabled() {
+        let config = RateLimitConfig {
+            burst_size: 1,
+            requests_per_second: 0.1,
+            window_duration: Duration::from_secs(60),
+            enabled: false,
+        };
+
+        let limiter = RateLimiter::new(config);
+
+        for _ in 0..100 {
+            match limiter.check("127.0.0.1") {
+                RateLimitResult::Allowed { .. } => {}
+                RateLimitResult::Limited { .. } => panic!("Should be allowed when disabled"),
+            }
+        }
+    }
+}

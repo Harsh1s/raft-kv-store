@@ -129,3 +129,265 @@ spec:
                 
                 security:
                   type: object
+                  properties:
+                    tls:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                        secretName:
+                          type: string
+                          description: "Secret containing TLS certificates"
+                    authentication:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                        adminSecretName:
+                          type: string
+                          description: "Secret containing admin API key"
+                    encryption:
+                      type: object
+                      properties:
+                        atRest:
+                          type: boolean
+                          default: true
+                        keySecretName:
+                          type: string
+                          description: "Secret containing encryption key"
+                
+                observability:
+                  type: object
+                  properties:
+                    metrics:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                        port:
+                          type: integer
+                          default: 9090
+                    tracing:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: false
+                        endpoint:
+                          type: string
+                          description: "OpenTelemetry collector endpoint"
+                
+                autoscaling:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    minReplicas:
+                      type: integer
+                      minimum: 1
+                      default: 3
+                    maxReplicas:
+                      type: integer
+                      maximum: 100
+                      default: 10
+                    targetCPUUtilization:
+                      type: integer
+                      minimum: 1
+                      maximum: 100
+                      default: 70
+                    targetMemoryUtilization:
+                      type: integer
+                      minimum: 1
+                      maximum: 100
+                      default: 80
+                    scaleDownStabilization:
+                      type: integer
+                      default: 300
+                      description: "Seconds to wait before scaling down"
+                
+                backup:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    schedule:
+                      type: string
+                      default: "0 2 * * *"
+                      description: "Cron schedule for backups"
+                    retention:
+                      type: integer
+                      default: 7
+                      description: "Number of backups to retain"
+                    destination:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum: ["s3", "gcs", "azure", "local"]
+                          default: "s3"
+                        bucket:
+                          type: string
+                        secretName:
+                          type: string
+                          description: "Secret containing cloud credentials"
+                
+                geo:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    region:
+                      type: string
+                      description: "This cluster's region identifier"
+                    zone:
+                      type: string
+                      description: "This cluster's availability zone"
+                    remoteRegions:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                          endpoint:
+                            type: string
+                          priority:
+                            type: integer
+                
+                timeseries:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    retentionDays:
+                      type: integer
+                      default: 30
+                    downsampleRules:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          after:
+                            type: string
+                            description: "Duration after which to downsample (e.g., '7d')"
+                          resolution:
+                            type: string
+                            description: "Target resolution (e.g., '1h')"
+                
+                tiering:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    hotTier:
+                      type: object
+                      properties:
+                        maxAge:
+                          type: string
+                          default: "24h"
+                        storageClass:
+                          type: string
+                          default: "fast-ssd"
+                    warmTier:
+                      type: object
+                      properties:
+                        maxAge:
+                          type: string
+                          default: "7d"
+                        storageClass:
+                          type: string
+                          default: "standard"
+                    coldTier:
+                      type: object
+                      properties:
+                        storageClass:
+                          type: string
+                          default: "archive"
+            
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: ["Pending", "Creating", "Running", "Updating", "Failed", "Deleting"]
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                coordinatorStatus:
+                  type: object
+                  properties:
+                    ready:
+                      type: integer
+                    total:
+                      type: integer
+                    leader:
+                      type: string
+                volumeStatus:
+                  type: object
+                  properties:
+                    ready:
+                      type: integer
+                    total:
+                      type: integer
+                    totalStorage:
+                      type: string
+                    usedStorage:
+                      type: string
+                endpoints:
+                  type: object
+                  properties:
+                    http:
+                      type: string
+                    grpc:
+                      type: string
+                    metrics:
+                      type: string
+                version:
+                  type: string
+                lastBackup:
+                  type: string
+                  format: date-time
+      
+      subresources:
+        status: {}
+        scale:
+          specReplicasPath: .spec.volumes.replicas
+          statusReplicasPath: .status.volumeStatus.ready
+      
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Coordinators
+          type: string
+          jsonPath: .status.coordinatorStatus.ready
+        - name: Volumes
+          type: string
+          jsonPath: .status.volumeStatus.ready
+        - name: Storage
+          type: string
+          jsonPath: .status.volumeStatus.usedStorage
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

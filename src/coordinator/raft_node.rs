@@ -242,3 +242,126 @@ impl RaftNode {
     }
 
     pub fn step_down(&self, new_term: u64, leader_id: Option<String>) {
+        *self.role.lock().unwrap() = RaftRole::Follower;
+        *self.term.lock().unwrap() = new_term;
+        *self.leader_id.lock().unwrap() = leader_id;
+        *self.voted_for.lock().unwrap() = None;
+    }
+
+    pub fn start_election(&self) -> u64 {
+        let mut term = self.term.lock().unwrap();
+        *term += 1;
+        let new_term = *term;
+
+        *self.role.lock().unwrap() = RaftRole::Candidate;
+        *self.voted_for.lock().unwrap() = Some(self.node_id.clone());
+        *self.leader_id.lock().unwrap() = None;
+
+        new_term
+    }
+
+    pub fn grant_vote(&self, term: u64, candidate_id: String) -> bool {
+        let mut current_term = self.term.lock().unwrap();
+        let mut voted = self.voted_for.lock().unwrap();
+
+        if term < *current_term {
+            return false;
+        }
+
+        if term > *current_term {
+            *current_term = term;
+            *voted = None;
+        }
+
+        if voted.is_none() || voted.as_ref() == Some(&candidate_id) {
+            *voted = Some(candidate_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub async fn replicate(&self, _entry: Vec<u8>) -> Result<()> {
+        if !self.is_leader() {
+            return Err(crate::Error::NotLeader(
+                self.get_leader().unwrap_or_else(|| "unknown".to_string()),
+            ));
+        }
+        let index;
+        let term;
+        let entry;
+        {
+            let mut log = self.log.lock().unwrap();
+            index = log.last().map(|e| e.index + 1).unwrap_or(1);
+            term = self.get_term();
+            entry = crate::common::raft::LogEntry {
+                term,
+                index,
+                data: _entry,
+            };
+            log.push(entry.clone());
+        }
+        let peers = {
+            let peers_guard = self.peers.lock().unwrap();
+            peers_guard.clone()
+        };
+        let entry_snapshot = entry.clone();
+        let node_id = self.node_id.clone();
+        let mut ack_count = 1; // Leader self-ack
+        for peer in &peers {
+            let req = crate::common::raft::AppendRequest {
+                term,
+                leader_id: node_id.clone(),
+                prev_log_index: index - 1,
+                prev_log_term: term,
+                entries: vec![entry_snapshot.clone()],
+                leader_commit: index,
+            };
+            if let Ok(resp) = send_append_entries_rpc(peer, req).await {
+                if resp.success {
+                    ack_count += 1;
+                }
+            }
+        }
+        let majority = (peers.len() + 1).div_ceil(2);
+        if ack_count >= majority {
+            let mut commit = self.commit_index.lock().unwrap();
+            *commit = index;
+            let mut applied = self.last_applied.lock().unwrap();
+            while *applied < *commit {
+                *applied += 1;
+            }
+            Ok(())
+        } else {
+            Err(crate::Error::Internal(
+                "Raft: no majority for commit".to_string(),
+            ))
+        }
+    }
+}
+
+pub fn start_raft_tasks(node: Arc<RaftNode>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn({
+        let node = node.clone();
+        async move {
+            let mut last_heartbeat = tokio::time::Instant::now();
+            let mut election_timeout =
+                tokio::time::Duration::from_millis(150 + rand::random::<u64>() % 150);
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                let peers = node.peers.lock().unwrap().clone();
+                if !node.is_leader() && last_heartbeat.elapsed() > election_timeout {
+                    tracing::info!("Node {} starting election", node.node_id);
+                    node.start_election_and_collect_votes(peers).await;
+                    election_timeout =
+                        tokio::time::Duration::from_millis(150 + rand::random::<u64>() % 150);
+                    last_heartbeat = tokio::time::Instant::now();
+                }
+                if node.is_leader() {
+                    node.send_heartbeats().await;
+                    last_heartbeat = tokio::time::Instant::now();
+                }
+            }
+        }
+    })
+}

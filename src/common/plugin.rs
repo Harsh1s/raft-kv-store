@@ -392,3 +392,202 @@ impl PluginManager {
             .map(|p| p.plugin.info().clone())
     }
 
+    pub async fn get_state(&self, plugin_id: &str) -> Option<PluginState> {
+        self.plugins.read().await.get(plugin_id).map(|p| p.state)
+    }
+
+    pub async fn list_plugins(&self) -> Vec<(PluginInfo, PluginState)> {
+        self.plugins
+            .read()
+            .await
+            .values()
+            .map(|p| (p.plugin.info().clone(), p.state))
+            .collect()
+    }
+
+    pub async fn enable_all(&self) -> Result<()> {
+        let order = self.load_order.read().await.clone();
+        for plugin_id in order {
+            self.enable(&plugin_id).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn disable_all(&self) -> Result<()> {
+        let mut order = self.load_order.read().await.clone();
+        order.reverse();
+        for plugin_id in order {
+            self.disable(&plugin_id).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn shutdown_all(&self) -> Result<()> {
+        self.disable_all().await?;
+
+        let mut order = self.load_order.read().await.clone();
+        order.reverse();
+        for plugin_id in order {
+            self.unregister(&plugin_id).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn health_check_all(&self) -> HashMap<String, bool> {
+        let plugins = self.plugins.read().await;
+        let mut results = HashMap::new();
+
+        for (id, registered) in plugins.iter() {
+            let healthy = registered.plugin.health_check().await.unwrap_or(false);
+            results.insert(id.clone(), healthy);
+        }
+
+        results
+    }
+}
+
+impl Default for PluginManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub static PLUGIN_MANAGER: once_cell::sync::Lazy<PluginManager> =
+    once_cell::sync::Lazy::new(PluginManager::new);
+
+pub fn get_plugin_manager() -> &'static PluginManager {
+    &PLUGIN_MANAGER
+}
+
+pub struct LoggingHookPlugin {
+    info: PluginInfo,
+}
+
+impl LoggingHookPlugin {
+    pub fn new() -> Self {
+        Self {
+            info: PluginInfo {
+                id: "builtin.logging-hook".to_string(),
+                name: "Logging Hook".to_string(),
+                description: "Logs all data operations".to_string(),
+                version: PluginVersion::new(1, 0, 0),
+                author: "minikv".to_string(),
+                homepage: None,
+                license: Some("MIT".to_string()),
+                plugin_type: PluginType::Hook,
+                required_version: PluginVersion::new(0, 8, 0),
+                dependencies: vec![],
+            },
+        }
+    }
+}
+
+impl Default for LoggingHookPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Plugin for LoggingHookPlugin {
+    fn info(&self) -> &PluginInfo {
+        &self.info
+    }
+
+    async fn initialize(&mut self, ctx: &PluginContext) -> Result<()> {
+        ctx.logger.info("Logging hook plugin initialized");
+        Ok(())
+    }
+
+    async fn enable(&mut self, ctx: &PluginContext) -> Result<()> {
+        ctx.logger.info("Logging hook plugin enabled");
+        Ok(())
+    }
+
+    async fn disable(&mut self, ctx: &PluginContext) -> Result<()> {
+        ctx.logger.info("Logging hook plugin disabled");
+        Ok(())
+    }
+
+    async fn shutdown(&mut self, ctx: &PluginContext) -> Result<()> {
+        ctx.logger.info("Logging hook plugin shutdown");
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl HookPlugin for LoggingHookPlugin {
+    async fn after_put(&self, key: &str, value: &[u8]) -> Result<()> {
+        tracing::info!("PUT {} ({} bytes)", key, value.len());
+        Ok(())
+    }
+
+    async fn after_get(&self, key: &str, value: Option<&[u8]>) -> Result<Option<Vec<u8>>> {
+        match value {
+            Some(v) => tracing::info!("GET {} ({} bytes)", key, v.len()),
+            None => tracing::info!("GET {} (not found)", key),
+        }
+        Ok(None)
+    }
+
+    async fn after_delete(&self, key: &str) -> Result<()> {
+        tracing::info!("DELETE {}", key);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_plugin_version_compatibility() {
+        let v1 = PluginVersion::new(1, 0, 0);
+        let v2 = PluginVersion::new(1, 2, 0);
+        let v3 = PluginVersion::new(2, 0, 0);
+
+        assert!(v1.is_compatible(&v2));
+        assert!(!v1.is_compatible(&v3));
+    }
+
+    #[test]
+    fn test_plugin_config() {
+        let mut config = PluginConfig::new();
+        config.set("timeout", 30);
+        config.set("enabled", true);
+        config.set("name", "test");
+
+        assert_eq!(config.get::<i32>("timeout"), Some(30));
+        assert_eq!(config.get::<bool>("enabled"), Some(true));
+        assert_eq!(config.get::<String>("name"), Some("test".to_string()));
+        assert_eq!(config.get::<i32>("missing"), None);
+    }
+
+    #[tokio::test]
+    async fn test_plugin_manager() {
+        let manager = PluginManager::new();
+
+        let plugin = LoggingHookPlugin::new();
+        let config = PluginConfig::new();
+
+        manager.register(Box::new(plugin), config).await.unwrap();
+
+        let plugins = manager.list_plugins().await;
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].0.id, "builtin.logging-hook");
+        assert_eq!(plugins[0].1, PluginState::Initialized);
+
+        manager.enable("builtin.logging-hook").await.unwrap();
+        assert_eq!(
+            manager.get_state("builtin.logging-hook").await,
+            Some(PluginState::Enabled)
+        );
+
+        manager.disable("builtin.logging-hook").await.unwrap();
+        assert_eq!(
+            manager.get_state("builtin.logging-hook").await,
+            Some(PluginState::Disabled)
+        );
+    }
+}

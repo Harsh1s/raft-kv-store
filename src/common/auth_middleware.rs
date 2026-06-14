@@ -128,3 +128,68 @@ pub async fn require_write_middleware(request: Request<Body>, next: Next) -> Res
                 })),
             )
                 .into_response();
+        }
+    }
+    next.run(request).await
+}
+
+pub async fn require_admin_middleware(request: Request<Body>, next: Next) -> Response {
+    if let Some(AuthExtension(Some(ref ctx))) = request.extensions().get::<AuthExtension>() {
+        if !ctx.can_admin() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "Admin permission required",
+                    "role": format!("{:?}", ctx.role)
+                })),
+            )
+                .into_response();
+        }
+    } else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Admin permission required",
+                "hint": "Authenticate with an admin API key"
+            })),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+pub fn get_tenant_from_request(request: &Request<Body>) -> String {
+    request
+        .extensions()
+        .get::<AuthExtension>()
+        .and_then(|ext| ext.0.as_ref())
+        .map(|ctx| ctx.tenant.clone())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+pub fn is_admin_request(request: &Request<Body>) -> bool {
+    request
+        .extensions()
+        .get::<AuthExtension>()
+        .and_then(|ext| ext.0.as_ref())
+        .map(|ctx| ctx.can_admin())
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_auth_state_default() {
+        let state = AuthState::default();
+        assert!(!state.config.enabled);
+    }
+
+    #[test]
+    fn test_public_paths() {
+        let config = AuthConfig::default();
+        assert!(config.public_paths.contains(&"/health".to_string()));
+        assert!(config.public_paths.contains(&"/metrics".to_string()));
+    }
+}

@@ -84,3 +84,48 @@ impl SledStore {
     }
 }
 
+#[cfg(feature = "sled")]
+impl KVStore for SledStore {
+    fn get(&self, key: &str) -> Option<Vec<u8>> {
+        self.db.get(key).unwrap().map(|ivec| ivec.to_vec())
+    }
+    fn put(&self, key: &str, value: Vec<u8>) {
+        self.db.insert(key, value).unwrap();
+    }
+    fn delete(&self, key: &str) {
+        self.db.remove(key).unwrap();
+    }
+}
+
+pub struct Storage {
+    backend: Arc<dyn KVStore>,
+}
+
+impl Storage {
+    pub fn new_memory() -> Self {
+        Self {
+            backend: Arc::new(MemStore::new()),
+        }
+    }
+    #[cfg(feature = "rocksdb")]
+    pub fn new_rocks(path: &str) -> Self {
+        Self {
+            backend: Arc::new(RocksStore::new(path)),
+        }
+    }
+    #[cfg(feature = "sled")]
+    pub fn new_sled(path: &str) -> Self {
+        Self {
+            backend: Arc::new(SledStore::new(path)),
+        }
+    }
+    pub fn get(&self, key: &str) -> Option<Vec<u8>> {
+        self.backend.get(key)
+    }
+    pub fn put(&self, key: &str, value: Vec<u8>) {
+        self.backend.put(key, value)
+    }
+    pub fn delete(&self, key: &str) {
+        self.backend.delete(key)
+    }
+}

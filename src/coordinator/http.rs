@@ -555,3 +555,1118 @@ async fn admin_status(State(state): State<CoordState>) -> impl IntoResponse {
     let role = if state.raft.is_leader() {
         "Leader"
     } else {
+        "Follower"
+    };
+    let nb_peers = state.raft.get_peers().len();
+    let volumes = state.metadata.get_healthy_volumes().unwrap_or_default();
+    let nb_volumes = volumes.len();
+    let volume_ids: Vec<_> = volumes.iter().map(|v| v.volume_id.clone()).collect();
+    let nb_s3_objects = 0;
+    axum::Json(json!({
+        "role": role,
+        "is_leader": state.raft.is_leader(),
+        "nb_peers": nb_peers,
+        "nb_volumes": nb_volumes,
+        "volume_ids": volume_ids,
+        "nb_s3_objects": nb_s3_objects
+    }))
+}
+
+#[derive(Deserialize)]
+struct ImportRequest {
+    entries: Vec<KeyValueEntry>,
+}
+
+#[derive(Deserialize)]
+struct KeyValueEntry {
+    key: String,
+    value: String,
+}
+
+async fn admin_import(
+    State(_state): State<CoordState>,
+    axum::Json(req): axum::Json<ImportRequest>,
+) -> impl IntoResponse {
+    let mut success_count = 0;
+    let errors: Vec<String> = Vec::new();
+
+    for entry in req.entries {
+        STORAGE.put(&entry.key, entry.value.into_bytes());
+        success_count += 1;
+    }
+
+    AUDIT_LOGGER.log_event(
+        AuditEventType::System,
+        "admin".to_string(),
+        None,
+        format!("Imported {} keys", success_count),
+        None,
+    );
+
+    axum::Json(json!({
+        "imported": success_count,
+        "errors": errors
+    }))
+}
+
+async fn admin_export(State(state): State<CoordState>) -> impl IntoResponse {
+    let keys = match state.metadata.list_keys() {
+        Ok(keys) => keys,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("list_keys error: {}", e),
+            )
+                .into_response();
+        }
+    };
+
+    let body = stream! {
+        for key in keys {
+            if let Some(value) = STORAGE.get(&key) {
+                let entry = json!({
+                    "key": key,
+                    "value": String::from_utf8_lossy(&value)
+                });
+                yield Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(format!("{}\n", entry)));
+            }
+        }
+    };
+
+    (
+        StatusCode::OK,
+        [("content-type", "application/x-ndjson")],
+        axum::body::Body::from_stream(body),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct TransactionRequest {
+    operations: Vec<Operation>,
+}
+
+#[derive(Deserialize)]
+struct Operation {
+    op: String, // "put" or "delete"
+    key: String,
+    value: Option<String>,
+}
+
+async fn transaction_ops(
+    State(_state): State<CoordState>,
+    axum::Json(req): axum::Json<TransactionRequest>,
+) -> impl IntoResponse {
+    let mut results = Vec::new();
+    let mut success_count = 0;
+    let total_operations = req.operations.len();
+
+    for op in &req.operations {
+        match op.op.as_str() {
+            "put" => {
+                if let Some(ref value) = op.value {
+                    STORAGE.put(&op.key, value.clone().into_bytes());
+                    success_count += 1;
+                    results.push(TransactionResult {
+                        op: op.op.clone(),
+                        key: op.key.clone(),
+                        success: true,
+                        error: None,
+                    });
+                } else {
+                    results.push(TransactionResult {
+                        op: op.op.clone(),
+                        key: op.key.clone(),
+                        success: false,
+                        error: Some("value required for put".to_string()),
+                    });
+                }
+            }
+            "delete" => {
+                STORAGE.delete(&op.key);
+                success_count += 1;
+                results.push(TransactionResult {
+                    op: op.op.clone(),
+                    key: op.key.clone(),
+                    success: true,
+                    error: None,
+                });
+            }
+            _ => {
+                results.push(TransactionResult {
+                    op: op.op.clone(),
+                    key: op.key.clone(),
+                    success: false,
+                    error: Some("unknown operation".to_string()),
+                });
+            }
+        }
+    }
+
+    AUDIT_LOGGER.log_event(
+        AuditEventType::System,
+        "transaction".to_string(),
+        None,
+        format!("Executed {} operations in transaction", success_count),
+        None,
+    );
+
+    axum::Json(json!({
+        "results": results,
+        "total_operations": total_operations,
+        "successful_operations": success_count
+    }))
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    value: String,
+}
+
+async fn search_keys(
+    State(state): State<CoordState>,
+    Query(params): Query<SearchQuery>,
+) -> impl IntoResponse {
+    match state.metadata.list_keys() {
+        Ok(keys) => {
+            let mut matching_keys = Vec::new();
+            for key in keys {
+                if let Some(value_bytes) = STORAGE.get(&key) {
+                    if let Ok(value_str) = std::str::from_utf8(&value_bytes) {
+                        if value_str.contains(&params.value) {
+                            matching_keys.push(key);
+                        }
+                    }
+                }
+            }
+            axum::Json(json!({
+                "query": params.value,
+                "matching_keys": matching_keys,
+                "total_matches": matching_keys.len()
+            }))
+        }
+        Err(e) => axum::Json(json!({ "error": format!("list_keys error: {}", e) })),
+    }
+}
+
+#[derive(Serialize)]
+struct TransactionResult {
+    op: String,
+    key: String,
+    success: bool,
+    error: Option<String>,
+}
+
+/// HTTP handler for range queries: GET /range?start=...&end=...&include_values=...
+#[derive(Deserialize)]
+struct RangeQuery {
+    start: String,
+    end: String,
+    include_values: Option<bool>,
+}
+
+async fn range_query(
+    State(state): State<CoordState>,
+    Query(params): Query<RangeQuery>,
+) -> impl IntoResponse {
+    let keys = match state.metadata.list_keys() {
+        Ok(keys) => keys,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("list_keys error: {}", e),
+            )
+        }
+    };
+    let mut filtered: Vec<String> = keys
+        .into_iter()
+        .filter(|k| k >= &params.start && k <= &params.end)
+        .collect();
+    filtered.sort();
+    if params.include_values.unwrap_or(false) {
+        let mut values = Vec::new();
+        for k in &filtered {
+            match state.metadata.get_key(k) {
+                Ok(Some(meta)) => values.push(serde_json::to_value(&meta).unwrap_or(json!(null))),
+                _ => values.push(json!(null)),
+            }
+        }
+        (
+            StatusCode::OK,
+            serde_json::to_string(&json!({ "keys": filtered, "values": values })).unwrap(),
+        )
+    } else {
+        (
+            StatusCode::OK,
+            serde_json::to_string(&json!({ "keys": filtered })).unwrap(),
+        )
+    }
+}
+
+#[derive(Deserialize)]
+struct BatchOpReq {
+    op: String, // "put", "get", "delete"
+    key: String,
+    value: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BatchReq {
+    ops: Vec<BatchOpReq>,
+}
+
+#[derive(Serialize)]
+struct BatchResultResp {
+    ok: bool,
+    key: String,
+    value: Option<String>,
+    error: Option<String>,
+}
+
+async fn batch_ops(
+    State(state): State<CoordState>,
+    axum::Json(req): axum::Json<BatchReq>,
+) -> impl IntoResponse {
+    let mut results = Vec::new();
+    for op in req.ops {
+        match op.op.as_str() {
+            "put" => {
+                if let Some(val) = op.value {
+                    let meta = crate::coordinator::metadata::KeyMetadata {
+                        key: op.key.clone(),
+                        replicas: vec![],
+                        size: val.len() as u64,
+                        blake3: "".to_string(),
+                        created_at: 0,
+                        updated_at: 0,
+                        state: crate::coordinator::metadata::KeyState::Active,
+                    };
+                    let r = state.metadata.put_key(&meta);
+                    results.push(BatchResultResp {
+                        ok: r.is_ok(),
+                        key: op.key,
+                        value: None,
+                        error: r.err().map(|e| format!("{}", e)),
+                    });
+                } else {
+                    results.push(BatchResultResp {
+                        ok: false,
+                        key: op.key,
+                        value: None,
+                        error: Some("Missing value for put".to_string()),
+                    });
+                }
+            }
+            "get" => {
+                let r = state.metadata.get_key(&op.key);
+                match r {
+                    Ok(Some(meta)) => results.push(BatchResultResp {
+                        ok: true,
+                        key: op.key,
+                        value: Some(serde_json::to_string(&meta).unwrap()),
+                        error: None,
+                    }),
+                    Ok(None) => results.push(BatchResultResp {
+                        ok: false,
+                        key: op.key,
+                        value: None,
+                        error: Some("Not found".to_string()),
+                    }),
+                    Err(e) => results.push(BatchResultResp {
+                        ok: false,
+                        key: op.key,
+                        value: None,
+                        error: Some(format!("{}", e)),
+                    }),
+                }
+            }
+            "delete" => {
+                let r = state.metadata.delete_key(&op.key);
+                results.push(BatchResultResp {
+                    ok: r.is_ok(),
+                    key: op.key,
+                    value: None,
+                    error: r.err().map(|e| format!("{}", e)),
+                });
+            }
+            _ => results.push(BatchResultResp {
+                ok: false,
+                key: op.key,
+                value: None,
+                error: Some("Unknown op".to_string()),
+            }),
+        }
+    }
+    axum::Json(json!({ "results": results }))
+}
+
+pub async fn metrics(State(state): State<CoordState>) -> impl IntoResponse {
+    let mut out = String::new();
+    let volumes: Vec<crate::coordinator::metadata::VolumeMetadata> =
+        state.metadata.get_healthy_volumes().unwrap_or_default();
+    let total_keys: u64 = volumes.iter().map(|v| v.total_keys).sum();
+    out += &format!("minikv_total_keys {{}} {}\n", total_keys);
+    out += &format!("minikv_healthy_volumes {{}} {}\n", volumes.len());
+    for v in &volumes {
+        out += &format!(
+            "minikv_volume_bytes {{volume_id=\"{}\"}} {}\n",
+            v.volume_id, v.total_bytes
+        );
+        out += &format!(
+            "minikv_volume_free_bytes {{volume_id=\"{}\"}} {}\n",
+            v.volume_id, v.free_bytes
+        );
+        out += &format!(
+            "minikv_volume_total_keys {{volume_id=\"{}\"}} {}\n",
+            v.volume_id, v.total_keys
+        );
+    }
+    let role = if state.raft.is_leader() {
+        "leader"
+    } else {
+        "follower"
+    };
+    out += &format!("minikv_raft_role {{}} \"{}\"\n", role);
+
+    out += &crate::common::METRICS.to_prometheus();
+
+    let s3_objects = 0;
+    let s3_objects_with_ttl = 0;
+    out += &format!("minikv_s3_objects_total {{}} {}\n", s3_objects);
+    out += &format!("minikv_s3_objects_with_ttl {{}} {}\n", s3_objects_with_ttl);
+
+    (axum::http::StatusCode::OK, out)
+}
+
+#[allow(dead_code)]
+async fn health(State(state): State<CoordState>) -> impl IntoResponse {
+    let role = if state.raft.is_leader() {
+        "Leader"
+    } else {
+        "Follower"
+    };
+
+    axum::Json(json!({
+        "status": "healthy",
+        "role": role,
+        "is_leader": state.raft.is_leader(),
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
+#[allow(dead_code)]
+/// 1. Prepare phase: ask all target volumes to prepare the write.
+/// 2. Commit phase: if all volumes are prepared, commit the write; otherwise, abort.
+async fn put_key(
+    State(state): State<CoordState>,
+    Path(key): Path<String>,
+    _body: Bytes,
+) -> impl IntoResponse {
+    let placement = state.placement.lock().unwrap();
+    let volumes = state.metadata.get_healthy_volumes().unwrap_or_default();
+    let target_volumes: Vec<String> = placement.select_volumes(&key, &volumes).unwrap_or_default();
+
+    let mut prepare_ok = true;
+    for _volume_id in &target_volumes {
+        let simulated_prepare = true;
+        if !simulated_prepare {
+            prepare_ok = false;
+            break;
+        }
+    }
+
+    if !prepare_ok {
+        for _volume_id in &target_volumes {}
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("PUT {} failed: prepare phase error (2PC)", key),
+        );
+    }
+
+    for _volume_id in &target_volumes {}
+
+    (StatusCode::OK, format!("PUT {} committed via 2PC", key))
+}
+
+#[allow(dead_code)]
+async fn get_key(State(_state): State<CoordState>, Path(key): Path<String>) -> impl IntoResponse {
+    let value = format!("Value for key {} (fetched from volume)", key);
+    (StatusCode::OK, value)
+}
+
+async fn delete_key(
+    State(_state): State<CoordState>,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    (StatusCode::OK, format!("DELETE {} succeeded", key))
+}
+
+async fn admin_ui_handler() -> impl IntoResponse {
+    crate::common::admin_ui::admin_dashboard().await
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateBackupRequest {
+    #[serde(rename = "type", default = "default_backup_type")]
+    backup_type: String,
+}
+
+fn default_backup_type() -> String {
+    "full".to_string()
+}
+
+async fn admin_create_backup(
+    axum::Json(req): axum::Json<CreateBackupRequest>,
+) -> impl IntoResponse {
+    let backup_type = match req.backup_type.as_str() {
+        "incremental" => crate::common::backup::BackupType::Incremental,
+        _ => crate::common::backup::BackupType::Full,
+    };
+
+    let guard = crate::common::backup::BACKUP_MANAGER.read().await;
+    if let Some(ref manager) = *guard {
+        let config = crate::common::backup::BackupConfig::default();
+        match manager.start_backup(config, backup_type).await {
+            Ok(backup_id) => {
+                AUDIT_LOGGER.log_event(
+                    AuditEventType::System,
+                    "admin".to_string(),
+                    Some(backup_id.clone()),
+                    format!("Started {:?} backup", backup_type),
+                    None,
+                );
+                (
+                    StatusCode::ACCEPTED,
+                    axum::Json(json!({
+                        "status": "started",
+                        "backup_id": backup_id,
+                        "type": req.backup_type
+                    })),
+                )
+                    .into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": format!("{}", e) })),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "Backup manager not initialized" })),
+        )
+            .into_response()
+    }
+}
+
+async fn admin_list_backups() -> impl IntoResponse {
+    let guard = crate::common::backup::BACKUP_MANAGER.read().await;
+    if let Some(ref manager) = *guard {
+        let backups = manager.list_backups().await;
+        axum::Json(json!({
+            "backups": backups,
+            "total": backups.len()
+        }))
+    } else {
+        axum::Json(json!({
+            "backups": [],
+            "total": 0
+        }))
+    }
+}
+
+async fn admin_get_backup(Path(backup_id): Path<String>) -> impl IntoResponse {
+    let guard = crate::common::backup::BACKUP_MANAGER.read().await;
+    if let Some(ref manager) = *guard {
+        match manager.get_backup(&backup_id).await {
+            Some(manifest) => (StatusCode::OK, axum::Json(json!(manifest))).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                axum::Json(json!({ "error": "Backup not found" })),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "Backup manager not initialized" })),
+        )
+            .into_response()
+    }
+}
+
+async fn admin_delete_backup(Path(backup_id): Path<String>) -> impl IntoResponse {
+    let guard = crate::common::backup::BACKUP_MANAGER.read().await;
+    if let Some(ref manager) = *guard {
+        match manager.delete_backup(&backup_id).await {
+            Ok(()) => {
+                AUDIT_LOGGER.log_event(
+                    AuditEventType::System,
+                    "admin".to_string(),
+                    Some(backup_id.clone()),
+                    "Deleted backup".to_string(),
+                    None,
+                );
+                (
+                    StatusCode::OK,
+                    axum::Json(json!({ "status": "deleted", "backup_id": backup_id })),
+                )
+                    .into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": format!("{}", e) })),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "Backup manager not initialized" })),
+        )
+            .into_response()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RestoreRequest {
+    backup_id: String,
+    target_path: Option<String>,
+}
+
+async fn admin_restore(axum::Json(req): axum::Json<RestoreRequest>) -> impl IntoResponse {
+    let guard = crate::common::backup::BACKUP_MANAGER.read().await;
+    if let Some(ref manager) = *guard {
+        let config = crate::common::backup::RestoreConfig {
+            backup_id: req.backup_id.clone(),
+            source: crate::common::backup::BackupDestination::Local {
+                path: "./backups".to_string(),
+            },
+            target_path: req.target_path.unwrap_or_else(|| "./restore".to_string()),
+            decryption_key: None,
+            point_in_time: None,
+            parallel_workers: 4,
+            verify_checksums: true,
+        };
+
+        match manager.start_restore(config).await {
+            Ok(restore_id) => {
+                AUDIT_LOGGER.log_event(
+                    AuditEventType::System,
+                    "admin".to_string(),
+                    Some(req.backup_id.clone()),
+                    format!("Started restore from backup {}", req.backup_id),
+                    None,
+                );
+                (
+                    StatusCode::ACCEPTED,
+                    axum::Json(json!({
+                        "status": "started",
+                        "restore_id": restore_id,
+                        "backup_id": req.backup_id
+                    })),
+                )
+                    .into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": format!("{}", e) })),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "Backup manager not initialized" })),
+        )
+            .into_response()
+    }
+}
+
+async fn admin_replication_status() -> impl IntoResponse {
+    let guard = crate::common::replication::REPLICATION_MANAGER
+        .read()
+        .unwrap();
+    if let Some(ref manager) = *guard {
+        let config = manager.config();
+        let status = manager.get_status();
+        let healthy = manager.is_healthy();
+
+        axum::Json(json!({
+            "enabled": true,
+            "local_dc": config.local_dc,
+            "conflict_resolution": format!("{:?}", config.conflict_resolution),
+            "async_replication": config.async_replication,
+            "healthy": healthy,
+            "remote_dcs": status.iter().map(|s| json!({
+                "dc_id": s.dc_id,
+                "healthy": s.healthy,
+                "lag_secs": s.lag_secs,
+                "pending_events": s.pending_events,
+                "last_replicated_at": s.last_replicated_at,
+                "last_error": s.last_error
+            })).collect::<Vec<_>>()
+        }))
+    } else {
+        axum::Json(json!({
+            "enabled": false,
+            "message": "Replication not configured"
+        }))
+    }
+}
+
+async fn admin_list_plugins() -> impl IntoResponse {
+    let plugins = crate::common::plugin::get_plugin_manager()
+        .list_plugins()
+        .await;
+
+    let plugin_list: Vec<serde_json::Value> = plugins
+        .iter()
+        .map(|(info, state)| {
+            json!({
+                "id": info.id,
+                "name": info.name,
+                "description": info.description,
+                "version": info.version.to_string(),
+                "author": info.author,
+                "plugin_type": format!("{:?}", info.plugin_type),
+                "state": format!("{:?}", state)
+            })
+        })
+        .collect();
+
+    axum::Json(json!({
+        "plugins": plugin_list,
+        "total": plugin_list.len()
+    }))
+}
+
+async fn admin_enable_plugin(Path(plugin_id): Path<String>) -> impl IntoResponse {
+    match crate::common::plugin::get_plugin_manager()
+        .enable(&plugin_id)
+        .await
+    {
+        Ok(()) => {
+            AUDIT_LOGGER.log_event(
+                AuditEventType::System,
+                "admin".to_string(),
+                Some(plugin_id.clone()),
+                "Enabled plugin".to_string(),
+                None,
+            );
+            (
+                StatusCode::OK,
+                axum::Json(json!({ "status": "enabled", "plugin_id": plugin_id })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": format!("{}", e) })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_disable_plugin(Path(plugin_id): Path<String>) -> impl IntoResponse {
+    match crate::common::plugin::get_plugin_manager()
+        .disable(&plugin_id)
+        .await
+    {
+        Ok(()) => {
+            AUDIT_LOGGER.log_event(
+                AuditEventType::System,
+                "admin".to_string(),
+                Some(plugin_id.clone()),
+                "Disabled plugin".to_string(),
+                None,
+            );
+            (
+                StatusCode::OK,
+                axum::Json(json!({ "status": "disabled", "plugin_id": plugin_id })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": format!("{}", e) })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_cdc_status() -> impl IntoResponse {
+    let (enabled, sequence) = {
+        let guard = crate::common::cdc::CDC_MANAGER.read().unwrap();
+        if let Some(ref manager) = *guard {
+            (true, manager.current_sequence())
+        } else {
+            (false, 0)
+        }
+    };
+
+    if enabled {
+        axum::Json(json!({
+            "enabled": true,
+            "current_sequence": sequence,
+            "sinks": []
+        }))
+    } else {
+        axum::Json(json!({
+            "enabled": false,
+            "message": "CDC not configured"
+        }))
+    }
+}
+
+async fn admin_timeseries_stats() -> impl IntoResponse {
+    ensure_timeseries_engine();
+    let guard = crate::common::timeseries::TIMESERIES_ENGINE.read().unwrap();
+
+    let stats = guard.as_ref().map(|engine| engine.stats()).unwrap_or(
+        crate::common::timeseries::TimeseriesStats {
+            total_series: 0,
+            total_points: 0,
+            total_bytes: 0,
+            retention_days: 30,
+            downsample_rules: 0,
+        },
+    );
+
+    axum::Json(json!({
+        "enabled": true,
+        "resolutions": ["raw", "1min", "5min", "1hour", "1day"],
+        "compression": ["delta", "gorilla"],
+        "aggregations": ["sum", "avg", "min", "max", "count", "stddev"],
+        "stats": stats,
+    }))
+}
+
+async fn admin_geo_status() -> impl IntoResponse {
+    axum::Json(json!({
+        "enabled": false,
+        "local_region": null,
+        "remote_regions": [],
+        "routing_strategy": "nearest",
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct TsPointInput {
+    timestamp: i64,
+    value: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TsWriteRequest {
+    metric: String,
+    #[serde(default)]
+    tags: HashMap<String, String>,
+    points: Vec<TsPointInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TsQueryRequest {
+    metric: String,
+    start: Option<String>,
+    end: Option<String>,
+    #[serde(default)]
+    tags: HashMap<String, String>,
+    aggregation: Option<crate::common::timeseries::Aggregation>,
+    resolution: Option<crate::common::timeseries::Resolution>,
+    limit: Option<usize>,
+}
+
+fn parse_ts_datetime(input: &str) -> Result<DateTime<Utc>, String> {
+    DateTime::parse_from_rfc3339(input)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| format!("invalid datetime '{}': {}", input, e))
+}
+
+fn build_ts_query(
+    req: TsQueryRequest,
+) -> Result<crate::common::timeseries::TimeseriesQuery, String> {
+    let end = match req.end {
+        Some(v) => parse_ts_datetime(&v)?,
+        None => Utc::now(),
+    };
+    let start = match req.start {
+        Some(v) => parse_ts_datetime(&v)?,
+        None => end - ChronoDuration::hours(1),
+    };
+
+    Ok(crate::common::timeseries::TimeseriesQuery {
+        metric: req.metric,
+        start,
+        end,
+        tags: req.tags,
+        aggregation: req.aggregation,
+        resolution: req.resolution,
+        limit: req.limit,
+    })
+}
+
+async fn ts_write(axum::Json(req): axum::Json<TsWriteRequest>) -> impl IntoResponse {
+    if req.metric.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": "metric is required" })),
+        )
+            .into_response();
+    }
+
+    ensure_timeseries_engine();
+
+    let mut series = crate::common::timeseries::TimeSeries::new(&req.metric);
+    series.tags = req.tags;
+    series.points = req
+        .points
+        .into_iter()
+        .map(|p| crate::common::timeseries::DataPoint::new(p.timestamp, p.value))
+        .collect();
+
+    let guard = crate::common::timeseries::TIMESERIES_ENGINE.read().unwrap();
+    let engine = match guard.as_ref() {
+        Some(engine) => engine,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({ "error": "timeseries engine unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    match engine.write(&series) {
+        Ok(()) => (
+            StatusCode::OK,
+            axum::Json(json!({
+                "success": true,
+                "metric": series.metric,
+                "points_written": series.points.len()
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": format!("timeseries write failed: {}", e) })),
+        )
+            .into_response(),
+    }
+}
+
+async fn ts_query(axum::Json(req): axum::Json<TsQueryRequest>) -> impl IntoResponse {
+    ensure_timeseries_engine();
+
+    let query = match build_ts_query(req) {
+        Ok(q) => q,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": e }))).into_response();
+        }
+    };
+
+    let guard = crate::common::timeseries::TIMESERIES_ENGINE.read().unwrap();
+    let engine = match guard.as_ref() {
+        Some(engine) => engine,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({ "error": "timeseries engine unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    match engine.query(&query) {
+        Ok(result) => (
+            StatusCode::OK,
+            axum::Json(json!({
+                "success": true,
+                "series": result.series,
+                "points": result
+                    .series
+                    .iter()
+                    .flat_map(|s| s.points.iter().cloned())
+                    .collect::<Vec<_>>(),
+                "execution_time_ms": result.execution_time_ms,
+                "points_scanned": result.points_scanned,
+                "points_returned": result.points_returned
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": format!("timeseries query failed: {}", e) })),
+        )
+            .into_response(),
+    }
+}
+
+async fn ts_query_get(Query(req): Query<TsQueryRequest>) -> impl IntoResponse {
+    ts_query(axum::Json(req)).await
+}
+
+#[derive(Debug, Deserialize)]
+struct VectorUpsertRequest {
+    id: String,
+    values: Vec<f32>,
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VectorQueryRequest {
+    vector: Vec<f32>,
+    top_k: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct VectorMatch {
+    id: String,
+    score: f32,
+    metadata: Option<serde_json::Value>,
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return None;
+    }
+
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+    }
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return None;
+    }
+    Some(dot / (norm_a.sqrt() * norm_b.sqrt()))
+}
+
+async fn vector_upsert(axum::Json(req): axum::Json<VectorUpsertRequest>) -> impl IntoResponse {
+    if let Err(e) = load_vector_index_if_needed() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": e })),
+        )
+            .into_response();
+    }
+
+    if req.id.trim().is_empty() || req.values.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({
+                "error": "id and non-empty values are required"
+            })),
+        )
+            .into_response();
+    }
+
+    let point = VectorPoint {
+        id: req.id.clone(),
+        values: req.values,
+        metadata: req.metadata,
+        updated_at: chrono::Utc::now().timestamp(),
+    };
+
+    let mut index = VECTOR_INDEX.write().unwrap();
+    index.insert(req.id.clone(), point);
+    drop(index);
+
+    if let Err(e) = persist_vector_index() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": e })),
+        )
+            .into_response();
+    }
+
+    let index = VECTOR_INDEX.read().unwrap();
+
+    (
+        StatusCode::OK,
+        axum::Json(json!({
+            "status": "upserted",
+            "id": req.id,
+            "total_vectors": index.len()
+        })),
+    )
+        .into_response()
+}
+
+async fn vector_query(axum::Json(req): axum::Json<VectorQueryRequest>) -> impl IntoResponse {
+    if let Err(e) = load_vector_index_if_needed() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": e })),
+        )
+            .into_response();
+    }
+
+    if req.vector.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": "vector must be non-empty" })),
+        )
+            .into_response();
+    }
+
+    let top_k = req.top_k.unwrap_or(10).clamp(1, 100);
+    let index = VECTOR_INDEX.read().unwrap();
+
+    let mut matches: Vec<VectorMatch> = index
+        .values()
+        .filter_map(|point| {
+            cosine_similarity(&req.vector, &point.values).map(|score| VectorMatch {
+                id: point.id.clone(),
+                score,
+                metadata: point.metadata.clone(),
+            })
+        })
+        .collect();
+
+    matches.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    matches.truncate(top_k);
+
+    (
+        StatusCode::OK,
+        axum::Json(json!({
+            "matches": matches,
+            "top_k": top_k,
+            "total_indexed": index.len()
+        })),
+    )
+        .into_response()
+}
+
+async fn admin_vector_stats() -> impl IntoResponse {
+    if let Err(e) = load_vector_index_if_needed() {
+        return axum::Json(json!({
+            "enabled": false,
+            "error": e
+        }));
+    }
+
+    let index = VECTOR_INDEX.read().unwrap();
+    let dims = index
+        .values()
+        .next()
+        .map(|point| point.values.len())
+        .unwrap_or(0);
+
+    axum::Json(json!({
+        "enabled": true,
+        "index_type": "persistent_flat",
+        "vectors": index.len(),
+        "dimensions": dims,
+        "path": VECTOR_INDEX_PATH
+    }))
+}

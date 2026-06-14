@@ -54,3 +54,31 @@ spec:
 apiVersion: v1
 kind: Secret
 metadata:
+  name: minikv-tls
+  namespace: default
+type: kubernetes.io/tls
+data:
+  tls.crt: |
+    LS0tLS1CRUdJTi...
+  tls.key: |
+    LS0tLS1CRUdJTi...
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minikv-admin-key
+  namespace: default
+type: Opaque
+stringData:
+  api-key: "your-secure-admin-api-key-here"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minikv-encryption-key
+  namespace: default
+type: Opaque
+stringData:
+  encryption-key: "your-32-byte-encryption-key-here!"

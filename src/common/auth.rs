@@ -326,3 +326,167 @@ impl KeyStore {
     }
 }
 
+impl Default for KeyStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AuthError {
+    #[error("Hash error: {0}")]
+    HashError(String),
+    #[error("JWT error: {0}")]
+    JwtError(String),
+    #[error("Key not found: {0}")]
+    KeyNotFound(String),
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+}
+
+pub static KEY_STORE: Lazy<Arc<KeyStore>> = Lazy::new(|| Arc::new(KeyStore::new()));
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    pub enabled: bool,
+    pub jwt_secret: Option<String>,
+    pub require_auth_for_reads: bool,
+    pub public_paths: Vec<String>,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            jwt_secret: None,
+            require_auth_for_reads: false,
+            public_paths: vec![
+                "/health".to_string(),
+                "/health/ready".to_string(),
+                "/health/live".to_string(),
+                "/metrics".to_string(),
+            ],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_and_validate_key() {
+        let store = KeyStore::new();
+
+        let (key_id, plaintext) = store
+            .generate_key("test-key", "default", Role::ReadWrite, None)
+            .unwrap();
+
+        assert!(!key_id.is_empty());
+        assert!(plaintext.starts_with(API_KEY_PREFIX));
+
+        match store.validate_key(&plaintext) {
+            AuthResult::Ok(ctx) => {
+                assert_eq!(ctx.key_id, key_id);
+                assert_eq!(ctx.tenant, "default");
+                assert_eq!(ctx.role, Role::ReadWrite);
+            }
+            _ => panic!("Expected valid key"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_key() {
+        let store = KeyStore::new();
+
+        match store.validate_key("mkv_invalid_key_here") {
+            AuthResult::Invalid(_) => {}
+            _ => panic!("Expected invalid key"),
+        }
+    }
+
+    #[test]
+    fn test_jwt_generation_and_validation() {
+        let store = KeyStore::new();
+
+        let ctx = AuthContext {
+            key_id: "test-key".to_string(),
+            tenant: "default".to_string(),
+            role: Role::Admin,
+        };
+
+        let token = store.generate_jwt(&ctx).unwrap();
+        assert!(!token.is_empty());
+
+        match store.validate_jwt(&token) {
+            AuthResult::Ok(validated_ctx) => {
+                assert_eq!(validated_ctx.key_id, ctx.key_id);
+                assert_eq!(validated_ctx.tenant, ctx.tenant);
+                assert_eq!(validated_ctx.role, ctx.role);
+            }
+            _ => panic!("Expected valid JWT"),
+        }
+    }
+
+    #[test]
+    fn test_revoke_key() {
+        let store = KeyStore::new();
+
+        let (key_id, plaintext) = store
+            .generate_key("test-key", "default", Role::ReadWrite, None)
+            .unwrap();
+
+        store.revoke_key(&key_id).unwrap();
+
+        match store.validate_key(&plaintext) {
+            AuthResult::Invalid(msg) => {
+                assert!(msg.contains("disabled"));
+            }
+            _ => panic!("Expected disabled key"),
+        }
+    }
+
+    #[test]
+    fn test_roles() {
+        assert!(Role::Admin.can_read());
+        assert!(Role::Admin.can_write());
+        assert!(Role::Admin.can_admin());
+
+        assert!(Role::ReadWrite.can_read());
+        assert!(Role::ReadWrite.can_write());
+        assert!(!Role::ReadWrite.can_admin());
+
+        assert!(Role::ReadOnly.can_read());
+        assert!(!Role::ReadOnly.can_write());
+        assert!(!Role::ReadOnly.can_admin());
+    }
+
+    #[test]
+    fn test_authenticate_header() {
+        let store = KeyStore::new();
+
+        let (_, plaintext) = store
+            .generate_key("test-key", "default", Role::ReadWrite, None)
+            .unwrap();
+
+        let header = format!("ApiKey {}", plaintext);
+        match store.authenticate(&header) {
+            AuthResult::Ok(_) => {}
+            _ => panic!("Expected valid auth"),
+        }
+
+        let ctx = AuthContext {
+            key_id: "test".to_string(),
+            tenant: "default".to_string(),
+            role: Role::Admin,
+        };
+        let token = store.generate_jwt(&ctx).unwrap();
+        let header = format!("Bearer {}", token);
+        match store.authenticate(&header) {
+            AuthResult::Ok(_) => {}
+            _ => panic!("Expected valid auth"),
+        }
+    }
+}

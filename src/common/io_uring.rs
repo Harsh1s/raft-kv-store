@@ -511,3 +511,4 @@ mod tests {
         assert_eq!(snapshot.completions, 95);
         assert_eq!(snapshot.bytes_read, 1024 * 1024);
     }
+}

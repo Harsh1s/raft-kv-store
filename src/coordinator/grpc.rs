@@ -106,3 +106,57 @@ impl CoordinatorInternal for CoordGrpcService {
         Ok(Response::new(resp))
     }
     async fn request_vote(
+        &self,
+        req: Request<VoteRequest>,
+    ) -> Result<Response<VoteResponse>, Status> {
+        let vote_req = req.into_inner();
+
+        let current_term = 1;
+        let vote_granted = vote_req.term >= current_term;
+        let resp = VoteResponse {
+            term: current_term,
+            vote_granted,
+        };
+        Ok(Response::new(resp))
+    }
+
+    async fn append_entries(
+        &self,
+        req: Request<AppendRequest>,
+    ) -> Result<Response<AppendResponse>, Status> {
+        let append_req = req.into_inner();
+
+        let current_term = 1;
+        let success = append_req.term >= current_term;
+        let resp = AppendResponse {
+            term: current_term,
+            success,
+            conflict_index: 0,
+        };
+        Ok(Response::new(resp))
+    }
+
+    async fn install_snapshot(
+        &self,
+        _req: Request<SnapshotRequest>,
+    ) -> Result<Response<SnapshotResponse>, Status> {
+        Err(Status::unimplemented("InstallSnapshot not implemented"))
+    }
+
+    async fn join(&self, _req: Request<JoinRequest>) -> Result<Response<JoinResponse>, Status> {
+        Ok(Response::new(JoinResponse {
+            ok: true,
+            cluster_id: "cluster-1".to_string(),
+        }))
+    }
+
+    async fn heartbeat(
+        &self,
+        _req: Request<HeartbeatRequest>,
+    ) -> Result<Response<HeartbeatResponse>, Status> {
+        Ok(Response::new(HeartbeatResponse {
+            ok: true,
+            commands: vec![],
+        }))
+    }
+}

@@ -272,3 +272,140 @@ impl MetricsRegistry {
         )
         .unwrap();
 
+        out.push_str("# HELP minikv_uptime_seconds Server uptime in seconds\n");
+        out.push_str("# TYPE minikv_uptime_seconds gauge\n");
+        writeln!(out, "minikv_uptime_seconds {}", self.uptime_seconds()).unwrap();
+
+        let endpoints = self.endpoints.lock().unwrap();
+
+        out.push_str("# HELP minikv_endpoint_requests_total Requests per endpoint\n");
+        out.push_str("# TYPE minikv_endpoint_requests_total counter\n");
+        for (path, metrics) in endpoints.iter() {
+            writeln!(
+                out,
+                "minikv_endpoint_requests_total{{path=\"{}\"}} {}",
+                path,
+                metrics.requests_total.get()
+            )
+            .unwrap();
+        }
+
+        out.push_str("# HELP minikv_endpoint_errors_total Errors per endpoint\n");
+        out.push_str("# TYPE minikv_endpoint_errors_total counter\n");
+        for (path, metrics) in endpoints.iter() {
+            writeln!(
+                out,
+                "minikv_endpoint_errors_total{{path=\"{}\"}} {}",
+                path,
+                metrics.requests_error.get()
+            )
+            .unwrap();
+        }
+
+        out.push_str("# HELP minikv_request_duration_ms Request duration in milliseconds\n");
+        out.push_str("# TYPE minikv_request_duration_ms histogram\n");
+        for (path, metrics) in endpoints.iter() {
+            for (le, count) in metrics.latency.get_buckets() {
+                if le.is_infinite() {
+                    writeln!(
+                        out,
+                        "minikv_request_duration_ms_bucket{{path=\"{}\",le=\"+Inf\"}} {}",
+                        path, count
+                    )
+                    .unwrap();
+                } else {
+                    writeln!(
+                        out,
+                        "minikv_request_duration_ms_bucket{{path=\"{}\",le=\"{}\"}} {}",
+                        path, le, count
+                    )
+                    .unwrap();
+                }
+            }
+            writeln!(
+                out,
+                "minikv_request_duration_ms_sum{{path=\"{}\"}} {}",
+                path,
+                metrics.latency.sum()
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "minikv_request_duration_ms_count{{path=\"{}\"}} {}",
+                path,
+                metrics.latency.count()
+            )
+            .unwrap();
+        }
+
+        out
+    }
+}
+
+impl Default for MetricsRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub static METRICS: once_cell::sync::Lazy<MetricsRegistry> =
+    once_cell::sync::Lazy::new(MetricsRegistry::new);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_histogram() {
+        let hist = Histogram::new();
+
+        hist.observe(5.0);
+        hist.observe(50.0);
+        hist.observe(500.0);
+
+        assert_eq!(hist.count(), 3);
+
+        let buckets = hist.get_buckets();
+        assert!(!buckets.is_empty());
+    }
+
+    #[test]
+    fn test_counter() {
+        let counter = Counter::new();
+
+        assert_eq!(counter.get(), 0);
+        counter.inc();
+        assert_eq!(counter.get(), 1);
+        counter.add(5);
+        assert_eq!(counter.get(), 6);
+    }
+
+    #[test]
+    fn test_gauge() {
+        let gauge = Gauge::new();
+
+        assert_eq!(gauge.get(), 0);
+        gauge.set(10);
+        assert_eq!(gauge.get(), 10);
+        gauge.inc();
+        assert_eq!(gauge.get(), 11);
+        gauge.dec();
+        assert_eq!(gauge.get(), 10);
+    }
+
+    #[test]
+    fn test_metrics_registry() {
+        let registry = MetricsRegistry::new();
+
+        registry.record_request("/test", Duration::from_millis(50), true);
+        registry.record_request("/test", Duration::from_millis(100), false);
+
+        assert_eq!(registry.total_requests.get(), 2);
+        assert_eq!(registry.total_errors.get(), 1);
+
+        let endpoint = registry.endpoint("/test");
+        assert_eq!(endpoint.requests_total.get(), 2);
+        assert_eq!(endpoint.requests_success.get(), 1);
+        assert_eq!(endpoint.requests_error.get(), 1);
+    }
+}

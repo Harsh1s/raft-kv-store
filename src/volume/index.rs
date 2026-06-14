@@ -264,3 +264,138 @@ mod tests {
         let dir = tempdir().unwrap();
         let snapshot_path = dir.path().join("index.snap");
 
+        let mut index = Index::new();
+        index.insert(
+            "key1".to_string(),
+            BlobLocation {
+                shard: 0,
+                offset: 100,
+                size: 1024,
+                blake3: blake3_hash(b"data1"),
+                expires_at: None,
+            },
+        );
+        index.insert(
+            "key2".to_string(),
+            BlobLocation {
+                shard: 1,
+                offset: 200,
+                size: 2048,
+                blake3: blake3_hash(b"data2"),
+                expires_at: Some(9999999999999), // Far future expiration
+            },
+        );
+
+        index.save_snapshot(&snapshot_path).unwrap();
+
+        let loaded = Index::load_snapshot(&snapshot_path).unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.contains("key1"));
+        assert!(loaded.contains("key2"));
+
+        let loc1 = loaded.get("key1").unwrap();
+        assert_eq!(loc1.offset, 100);
+        assert_eq!(loc1.expires_at, None);
+
+        let loc2 = loaded.get("key2").unwrap();
+        assert_eq!(loc2.expires_at, Some(9999999999999));
+    }
+
+    #[test]
+    fn test_ttl_expiration() {
+        let mut index = Index::new();
+
+        let past_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            - 1000; // 1 second in the past
+
+        index.insert(
+            "expired_key".to_string(),
+            BlobLocation {
+                shard: 0,
+                offset: 0,
+                size: 100,
+                blake3: "test".to_string(),
+                expires_at: Some(past_time),
+            },
+        );
+
+        let future_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 60000; // 60 seconds in the future
+
+        index.insert(
+            "valid_key".to_string(),
+            BlobLocation {
+                shard: 0,
+                offset: 100,
+                size: 100,
+                blake3: "test".to_string(),
+                expires_at: Some(future_time),
+            },
+        );
+
+        index.insert(
+            "permanent_key".to_string(),
+            BlobLocation {
+                shard: 0,
+                offset: 200,
+                size: 100,
+                blake3: "test".to_string(),
+                expires_at: None,
+            },
+        );
+
+        assert!(index.is_expired("expired_key"));
+        assert!(!index.is_expired("valid_key"));
+        assert!(!index.is_expired("permanent_key"));
+
+        assert!(index.get_if_valid("expired_key").is_none());
+        assert!(index.get_if_valid("valid_key").is_some());
+        assert!(index.get_if_valid("permanent_key").is_some());
+
+        let removed = index.cleanup_expired();
+        assert_eq!(removed, 1);
+        assert_eq!(index.len(), 2);
+        assert!(!index.contains("expired_key"));
+        assert!(index.contains("valid_key"));
+        assert!(index.contains("permanent_key"));
+    }
+
+    #[test]
+    fn test_keys_with_ttl() {
+        let mut index = Index::new();
+
+        index.insert(
+            "key_with_ttl".to_string(),
+            BlobLocation {
+                shard: 0,
+                offset: 0,
+                size: 100,
+                blake3: "test".to_string(),
+                expires_at: Some(12345),
+            },
+        );
+
+        index.insert(
+            "key_without_ttl".to_string(),
+            BlobLocation {
+                shard: 0,
+                offset: 100,
+                size: 100,
+                blake3: "test".to_string(),
+                expires_at: None,
+            },
+        );
+
+        let keys_with_ttl = index.keys_with_ttl();
+        assert_eq!(keys_with_ttl.len(), 1);
+        assert_eq!(keys_with_ttl[0].0, "key_with_ttl");
+        assert_eq!(keys_with_ttl[0].1, 12345);
+    }
+}

@@ -214,3 +214,5 @@ message HeartbeatRequest {
 
 message HeartbeatResponse {
   bool ok = 1;
+  repeated string commands = 2; // e.g., ["compact_shard:0", "rebalance"]
+}
